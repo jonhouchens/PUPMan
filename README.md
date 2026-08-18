@@ -66,6 +66,12 @@ PUPMan tracks maneuver expiration internally for plan recommendations, refresh d
 
 The presets are starting points only. The best elements depend on your head, frame, attachments, target, and party role.
 
+## Install
+
+Copy `pupman.lua`, `actionpacket.lua`, and `petstatus.lua` into
+`<Ashita>/addons/pupman/`. Then copy every Lua file from this repository's
+`libs/` directory into `<Ashita>/addons/libs/`.
+
 ## Load
 
 In game:
