@@ -278,6 +278,12 @@ LandSandBoat applies attachment recasts when an automaton spawns, so a fresh
 Activate observed after PUPMan loads begins those countdowns immediately.
 Valoredge Shield Bash begins ready and is modeled at 180 seconds after use;
 Barrier Module reduces that interval by five seconds per active Earth Maneuver.
+The Sharpshot frame also gains a `Ranged Attack` row. Its modeled base delay is
+20 seconds with the Sharpshot head, 25 with Harlequin, and 36 with another head.
+Drum Magazine reduces that by 2/4/6/8 seconds at zero through three active Wind
+Maneuvers. An observed shot (action `1949`) anchors the countdown; a fresh
+Activate starts ready, while a pet already present when PUPMan loads remains
+`UNKNOWN` until it fires.
 The supported base systems are Strobe (30s), Shock Absorber/Stoneskin (180s),
 Flashbulb (45s), Mana Converter (180s), Eraser (30s), Reactive Shield (60s),
 Economizer (60s), Replicator (60s), and Disruptor (60s). Definitions for later

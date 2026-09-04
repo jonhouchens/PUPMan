@@ -1,9 +1,9 @@
 --[[
-pupcooldowns.lua (v1.0) -- shared Puppetmaster automaton-system tracker
+pupcooldowns.lua (v1.1) -- shared Puppetmaster automaton-system tracker
 
 Tracks discrete automaton abilities from incoming action packets. Equipped
-attachments and the active frame decide which rows exist; the caller supplies
-those values from the PUP 0x44 packet (pupstats.lua already exposes both).
+attachments and the active head/frame decide which rows exist and their modeled
+durations; the caller supplies those values from the PUP 0x44 packet.
 
 The default action IDs, cooldowns, and spawn behavior follow LandSandBoat's
 base branch as of 2026-08-15. Horizon is a private fork, so every duration is a
@@ -16,7 +16,15 @@ ability is observed rather than claiming a false READY state.
 ]]
 
 local lib = {}
-lib.VERSION = '1.0'
+lib.VERSION = '1.1'
+
+local HARLEQUIN_HEAD = 0x01
+local SHARPSHOT_HEAD = 0x03
+local SHARPSHOT_FRAME = 0x22
+
+-- Horizon's era module models Drum Magazine at 2/4/6/8 seconds of ranged
+-- delay reduction for zero through three Wind Maneuvers.
+local DRUM_MAGAZINE_DELAY = { [0] = 2, [1] = 4, [2] = 6, [3] = 8 }
 
 local function normalized(value)
     return string.lower(tostring(value or '')):gsub('[^%w]', '')
@@ -28,6 +36,10 @@ lib.DEFINITIONS = {
     {
         key = 'shield_bash', name = 'Shield Bash', action_id = 1944,
         cooldown = 180, frame = 0x21, spawn_delay = false,
+    },
+    {
+        key = 'ranged_attack', name = 'Ranged Attack', action_id = 1949,
+        cooldown = 36, frame = SHARPSHOT_FRAME, spawn_delay = false,
     },
     {
         key = 'strobe', name = 'Strobe', action_id = 1945,
@@ -106,6 +118,7 @@ function lib.new(cfg)
     local self = setmetatable({}, Tracker)
     self.now = cfg.now or os.clock
     self.frame = 0
+    self.head = 0
     self.attachments = {}
     self.active_definitions = {}
     self.used_at = {}
@@ -115,8 +128,9 @@ function lib.new(cfg)
     return self
 end
 
-function Tracker:configure(attachments, frame)
+function Tracker:configure(attachments, frame, head)
     self.frame = tonumber(frame) or 0
+    self.head = tonumber(head) or 0
     self.attachments = {}
     for _, attachment in ipairs(attachments or {}) do
         local name = type(attachment) == 'table' and attachment.name or attachment
@@ -189,6 +203,24 @@ function Tracker:_cooldown(definition, context)
         end
         cooldown = cooldown - math.min(3, maneuver_count(context, 'Earth'))
             * 5 * barrier_count
+    elseif definition.key == 'ranged_attack' then
+        if self.head == SHARPSHOT_HEAD then
+            cooldown = 20
+        elseif self.head == HARLEQUIN_HEAD then
+            cooldown = 25
+        else
+            cooldown = 36
+        end
+
+        if self.attachments[normalized('Drum Magazine')] then
+            local wind = math.min(3, maneuver_count(context, 'Wind'))
+            cooldown = cooldown - DRUM_MAGAZINE_DELAY[wind]
+        end
+
+        -- The public server baseline floors Sharpshot-head attacks at five
+        -- seconds and all other head combinations at ten seconds.
+        cooldown = math.max(self.head == SHARPSHOT_HEAD and 5 or 10,
+            cooldown)
     end
     return math.max(0, cooldown)
 end

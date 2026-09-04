@@ -1,6 +1,6 @@
 addon.name      = 'pupman';
 addon.author    = 'Koruru';
-addon.version   = '3.13.0';
+addon.version   = '3.14.0';
 addon.desc      = 'A compact maneuver planner, automaton control, and overload helper for Puppetmaster.';
 
 require 'common';
@@ -314,7 +314,8 @@ local systems_tracker = pupcooldowns.new({ now = os.clock });
 
 local function configure_systems_tracker()
     systems_tracker:configure(
-        burden_stats:attachments(), state.automaton_frame);
+        burden_stats:attachments(), state.automaton_frame,
+        state.automaton_head);
 end
 
 local function heatsink_detected()
