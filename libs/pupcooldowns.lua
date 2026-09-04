@@ -27,7 +27,7 @@ end
 lib.DEFINITIONS = {
     {
         key = 'shield_bash', name = 'Shield Bash', action_id = 1944,
-        cooldown = 180, frame = 21, spawn_delay = false,
+        cooldown = 180, frame = 0x21, spawn_delay = false,
     },
     {
         key = 'strobe', name = 'Strobe', action_id = 1945,

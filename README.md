@@ -2,8 +2,8 @@
 
 PUPMan is a small Ashita v4 addon for managing Puppetmaster maneuvers.
 
-Its Puppetmaster models use the shared `burdenmodel.lua`, `burdenforecast.lua`,
-`pupstats.lua`, and `pupcooldowns.lua`
+Its Puppetmaster models use the shared `automatonws.lua`, `burdenmodel.lua`,
+`burdenforecast.lua`, `pupstats.lua`, and `pupcooldowns.lua`
 libraries from Ashita's `addons/libs` directory. Both PUPMan and Arcane
 Automata consume these same implementations rather than maintaining separate
 stat or burden parsers.
@@ -15,8 +15,10 @@ It provides:
 - a chic micro HUD by default, with the expanded compact layout available;
 - automatic HUD hiding in towns and cutscenes;
 - exact automaton HP plus MP and TP vitals, with escalating low-MP warnings;
+- a skill-aware projection of the automaton's next maneuver-selected weapon skill;
 - packet-tracked automaton buffs and debuffs in both HUD layouts;
 - an optional, separately anchored Puppet Systems cooldown panel;
+- plan-node burden chances and an optional eight-element burden sidecar;
 - Activate, Repair, Deploy, Deactivate, and Retrieve recasts;
 - Repair readiness, inventory oil count, and a configurable HP warning;
 - post-maneuver overload risk (`SAFE`, `LOW`, `WARM`, or `DANGER`) for the next plan element;
@@ -29,13 +31,20 @@ It provides:
 - an exact-HP, one-shot Deactivate command;
 - configurable plans for common automaton roles.
 
-The compact HUD uses ToAU-inspired imperial blue-green, aged brass, and parchment colors. Its header uses aligned pet/mode and head/frame columns, followed by equal HP/MP/TP cards. Each vital keeps its label on a consistently dark surface and uses a thin colored meter below it: deep red for HP, olive-gold for MP, and cyan for weaponskill-ready TP. At 800 TP the fill and label brighten to signal that a weaponskill is close; at 1,000 TP the card gains a stronger fill, subtle cyan tint, and slow pulsing cyan border; it brightens again at 2,000. Brass `// MANEUVER CONTROL` and `// AUTOMATON` dividers separate planning from the Deactivate/Repair/ability footer. The recommended maneuver receives an element-tinted decision card with its actionable context built into the card, ability recasts use readiness dots, and a faint gear/circuit watermark gives the panel a Puppetmaster identity.
+The compact HUD uses ToAU-inspired imperial blue-green, aged brass, and parchment colors. Its header uses aligned pet/mode and head/frame columns, followed by equal HP/MP/TP cards and a `NEXT WS` projection. Each vital keeps its label on a consistently dark surface and uses a thin colored meter below it: deep red for HP, olive-gold for MP, and cyan for weaponskill-ready TP. At 800 TP the fill and label brighten to signal that a weaponskill is close; at 1,000 TP the card gains a stronger fill, subtle cyan tint, and slow pulsing cyan border; it brightens again at 2,000. Brass `// MANEUVER CONTROL` and `// AUTOMATON` dividers separate planning from the Deactivate/Repair/ability footer. The recommended maneuver receives an element-tinted decision card with its actionable context built into the card, ability recasts use readiness dots, and a faint gear/circuit watermark gives the panel a Puppetmaster identity.
 
 Low MP is deliberately difficult to overlook. Below 30%, the MP card becomes
 amber and pulses with `MP!`; below 20% it becomes orange with `MP!!`; below
 10% it becomes a fast red critical card with `MP!!!`, and the HUD's left status
 rail adopts the same warning color. The thresholds use strictly less than
 30/20/10. Frames with no MP pool are excluded.
+
+An optional notification-only sound can reinforce that visual warning while
+soloing. Enable it with `/pm mpalert on`; it sounds once when an automaton with
+an MP pool falls to 10% by default, then re-arms only after MP recovers to 20%.
+Change the low threshold with `/pm mpalert threshold <1-99>` and preview the
+sound with `/pm mpalert test`. The alert is off by default, works even while the
+HUD is hidden, and never issues a gameplay command.
 
 Warnings stay in fixed UI regions so state changes never resize the HUD. The
 decision row reports conditions such as overload, no pet, and maneuver recast;
@@ -44,7 +53,38 @@ Deactivate, Repair, ability readiness, and oil information visible.
 
 The `PET FX` row reconstructs automaton status changes from the same action and message packet families used by XIUI's pet bar. Teal `+` tags are buffs and orange-red `-` tags are debuffs, with debuffs sorted first. Because the client does not expose a complete pet-effect list, effects already active when the addon loads may not appear until they are reapplied; the tracker clears when the automaton changes or you zone.
 
-Micro mode is the default. It begins with aligned two-column rows for mode/combat and Deactivate/risk, followed by the equal HP/MP/TP cards, plan circuit, and next action/status. The slim three-node circuit displays the ordered elemental plan: filled sigils represent active maneuver copies, and a softly pulsing outer ring marks the element PUPMan would recommend next. Duplicate elements retain separate nodes, so plans such as Fire / Fire / Thunder remain unambiguous. Decision status is reduced to a terse value such as `MISSING`, `RECAST`, `STABLE 32s`, `REFRESH 8s`, `OVERLOAD`, or `NO PET`. Compact and micro layouts share a fixed 382 px width with additional edge padding for border decoration, so switching layouts does not move the right edge. It remains click-through and can be expanded with `/pm layout compact`.
+Micro mode is the default. It begins with aligned two-column rows for mode/combat and Deactivate/risk, followed by the equal HP/MP/TP cards, next-WS projection, plan circuit, and next action/status. The slim three-node circuit displays the ordered elemental plan: filled sigils represent active maneuver copies, a softly pulsing outer ring marks the element PUPMan would recommend next, and each abbreviation carries that element's projected overload chance if used now. Duplicate elements retain separate nodes, so plans such as Fire / Fire / Thunder remain unambiguous. Decision status is reduced to a terse value such as `MISSING`, `RECAST`, `STABLE 32s`, `REFRESH 8s`, `OVERLOAD`, or `NO PET`. Compact and micro layouts share a fixed 382 px width with additional edge padding for border decoration, so switching layouts does not move the right edge. It remains click-through and can be expanded with `/pm layout compact`.
+
+## Next weapon-skill projection
+
+`NEXT WS` uses the equipped frame, the live current melee or ranged skill from
+the PUP `0x44` packet, and the current maneuver counts. It excludes locked
+weapon skills, then mirrors the normal automaton priority: most matching
+maneuvers, highest skill requirement, then highest ability ID. The right side
+of the row shows the winning element and active count; `DEFAULT PRIORITY` means
+none of that frame's unlocked weapon skills currently has a matching maneuver.
+
+This is a projection of the normal server decision, not a claim that the
+automaton will act immediately. TP, range, action priority, status effects, and
+target state can delay a weapon skill. With Inhibitor equipped, skillchain
+state and the master's TP can override the maneuver-selected weapon skill, so
+the row changes to `INHIBITOR: CONDITIONAL`. PUPMan does not attempt to infer
+hidden server state or automate an action. The Horizon-era frame lists are
+documented by the [HorizonXI skillchain reference](https://horizonffxi.wiki/Skillchains),
+and the selection ordering follows LandSandBoat's
+[`automaton_controller.cpp`](https://github.com/LandSandBoat/server/blob/base/src/map/ai/controllers/automaton_controller.cpp)
+as a public baseline for Horizon's private fork.
+
+The burden display defaults to `plan`, which adds the three micro-plan chances
+without changing the HUD width or height. `/pm burden view all` also enables a
+separately anchored `ELEMENT BURDEN` sidecar containing all eight next-use
+chances. Each percentage has a thin 0-100% risk meter, while one to three
+quiet pips show active copies of that element without duplicating maneuver
+timers or ordering from a dedicated tracker such as Arcane Automata.
+`/pm burden side left|right` moves it around the main HUD. If Puppet
+Systems is visible on the same side, the burden panel automatically sits
+outside it instead of overlapping it. `/pm burden view off` hides both the
+plan-node additions and the sidecar.
 
 The optional `PUPPET SYSTEMS` window is off by default and anchors to the
 right of the main HUD without changing its size. `/pm systems on` enables it;
@@ -93,9 +133,12 @@ To load it automatically, add the same line to your Ashita startup script. The H
 | `/pm da` | Use Deactivate once, only at exact full HP |
 | `/pm hp` | Print the synchronized raw HP integers |
 | `/pm rep` | Use Repair once if it is ready and oil is present |
+| `/pm mpalert on` | Enable the one-shot low automaton MP sound |
+| `/pm autowatermode on` | Recommend Water after a Heatsink Overload |
 | `/pm mode melee` | Select a role plan |
 | `/pm layout micro` | Switch to the minimal HUD |
 | `/pm systems on` | Show the anchored Puppet Systems panel |
+| `/pm burden view all` | Show plan risks and the elemental burden sidecar |
 
 Full element names also work, such as `/pm fire` and `/pm light`. `/pupman` can be used in place of `/pm`.
 
@@ -125,6 +168,10 @@ No key is bound automatically.
 /pm hp
 /pm repair
 /pm repairwarn 40
+/pm mpalert on
+/pm mpalert status
+/pm mpalert threshold 10
+/pm mpalert test
 /pm recasts
 /pm mode
 /pm mode profile
@@ -142,8 +189,15 @@ No key is bound automatically.
 /pm townhide on
 /pm cshide on
 /pm colorblind on
+/pm autowatermode on
+/pm autowatermode status
 /pm burden
 /pm burden reset
+/pm burden view plan
+/pm burden view all
+/pm burden view off
+/pm burden side left
+/pm burden side right
 /pm burden threshold 0
 /pm burden threshold 5
 /pm burden heatsink auto
@@ -165,6 +219,15 @@ No key is bound automatically.
 ```
 
 `/pm n` (or `/pm next`) is the primary action command. It evaluates the current plan and performs at most one recommended maneuver in direct response to that command. PUPMan has no combat controller, action timer, automatic retry, or background action path. After an Overload, `/pm n` temporarily skips the element that caused it and selects the next missing, different element in the plan. If no different element is missing, it holds until the failed element's projected risk is acceptable. With the burden guard enabled, its configured percentage is the acceptable limit; with the guard off, the failed element must reach a zero-percent projection. Direct element and numbered commands remain manual overrides. The skip clears when the projection reaches that limit, when burden projections are manually reset, when a fresh automaton is activated, or when changing zones.
+
+Optional Auto Water mode changes that first post-Overload recommendation when
+Heatsink is actually detected among the equipped attachments. Enable it with
+`/pm autowatermode on`. After the server confirms an Overload, PUPMan holds
+while the Overload buff is active and then makes Water the next `/pm n`
+recommendation, even when Water is not part of the selected plan. The override
+clears only after the server processes that Water Maneuver; failed or rejected
+command attempts do not consume it. It never activates Water from a timer,
+packet, render, or status event—the maneuver still requires one `/pm n` input.
 
 An optional burden guard can hold any recommendation above a chosen projected overload percentage: `/pm burden guard 20` allows risks through 20% and holds at 21% or higher. For modeled `estimate` quality, the guard compares against a conservative upper projection that allows for one uncertain decay tick. An enabled guard also holds on `UNKNOWN`; direct commands such as `/pm light`, `/pm use light`, and `/pm 1` remain manual overrides. The guard defaults to off.
 
@@ -263,9 +326,21 @@ roughly one tick. Action results 798/799 anchor its gauge to the percentage repo
 the server, then the telemetry-fitted Horizon model projects the value between
 observations. It uses a fresh burden of 30 at the assumed base threshold of 30,
 a normal-frame Dark gain of 15, and one decay per three-second server tick. A
-cold-attached element remains `UNKNOWN` until its first server result. The compact HUD shows the projection quality (`exact`,
+cold-attached element remains `UNKNOWN` until its first server result. For
+non-Dark Maneuvers, the fitted gain curve is 20 below stat parity, 19/18/17 at
+master-minus-pet differences 0/1/2, 15 at difference 3, and 14 at 4 or more.
+The difference-3 exception comes from repeated fresh-pet Light Maneuvers in the
+2026-08-26 DAD session; Horizon consistently reported one less burden than the
+LSB rule at that point. The compact HUD shows the projection quality (`exact`,
 `estimate`, or `bound`) beside the element; `estimate` is the normal steady-state
 quality after modeled decay has occurred.
+
+The micro plan and burden sidecar use compact confidence notation: a plain
+percentage is exact, `~` is estimated after modeled decay, `<=` is a
+server-anchored upper bound, and `?` is unknown. `OL` replaces the percentage
+while Overload is active. Repeated plan elements intentionally show the same
+value because every reading answers the same question—what happens if that
+element is used now—not a sequential simulation of the remaining plan.
 
 `/pm burden` or `/pm burden status` prints the configuration and all eight
 elemental projections, followed by the seven live non-Dark master-minus-pet

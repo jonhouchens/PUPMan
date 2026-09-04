@@ -1,11 +1,12 @@
 addon.name      = 'pupman';
 addon.author    = 'Koruru';
-addon.version   = '3.9.0';
+addon.version   = '3.13.0';
 addon.desc      = 'A compact maneuver planner, automaton control, and overload helper for Puppetmaster.';
 
 require 'common';
 
 local actionpacket = require 'actionpacket';
+local automatonws  = require 'automatonws';
 local burden       = require 'burdenmodel';
 local forecast     = require 'burdenforecast';
 local pupcooldowns = require 'pupcooldowns';
@@ -33,10 +34,13 @@ local HUD_FONT_SIZE = 14.0;
 local HUD_VITALS_FONT_SIZE = 16.0;
 local HUD_WIDTH = 382;
 local SYSTEMS_WIDTH = 230;
+local BURDEN_WIDTH = 266;
 local SYSTEMS_GAP = 8;
 local MP_WARNING_THRESHOLD = 30;
 local MP_DANGER_THRESHOLD = 20;
 local MP_CRITICAL_THRESHOLD = 10;
+local MP_SOUND_RECOVERY_MARGIN = 10;
+local MP_SOUND_PATH = 'C:\\Windows\\Media\\Windows Exclamation.wav';
 local OIL_ITEM_IDS = T{ 18731, 18732, 18733, 19185 };
 local oil_item_set = {};
 for _, item_id in ipairs(OIL_ITEM_IDS) do
@@ -78,18 +82,19 @@ local automaton_heads = T{
 };
 
 local automaton_frames = T{
-    [20] = 'Harlequin', [21] = 'Valoredge', [22] = 'Sharpshot', [23] = 'Stormwaker',
+    [0x20] = 'Harlequin', [0x21] = 'Valoredge',
+    [0x22] = 'Sharpshot', [0x23] = 'Stormwaker',
 };
 
 local elements = T{
-    [141] = { name = 'Fire',    buff = 300, color = { 0.90, 0.25, 0.15, 1.00 } },
-    [142] = { name = 'Ice',     buff = 301, color = { 0.35, 0.70, 1.00, 1.00 } },
-    [143] = { name = 'Wind',    buff = 302, color = { 0.35, 0.85, 0.55, 1.00 } },
-    [144] = { name = 'Earth',   buff = 303, color = { 0.72, 0.52, 0.25, 1.00 } },
-    [145] = { name = 'Thunder', buff = 304, color = { 0.75, 0.45, 1.00, 1.00 } },
-    [146] = { name = 'Water',   buff = 305, color = { 0.20, 0.55, 0.95, 1.00 } },
-    [147] = { name = 'Light',   buff = 306, color = { 1.00, 0.90, 0.35, 1.00 } },
-    [148] = { name = 'Dark',    buff = 307, color = { 0.55, 0.40, 0.70, 1.00 } },
+    [141] = { name = 'Fire',    short = 'FIR', buff = 300, color = { 0.90, 0.25, 0.15, 1.00 } },
+    [142] = { name = 'Ice',     short = 'ICE', buff = 301, color = { 0.35, 0.70, 1.00, 1.00 } },
+    [143] = { name = 'Wind',    short = 'WIN', buff = 302, color = { 0.35, 0.85, 0.55, 1.00 } },
+    [144] = { name = 'Earth',   short = 'EAR', buff = 303, color = { 0.72, 0.52, 0.25, 1.00 } },
+    [145] = { name = 'Thunder', short = 'THN', buff = 304, color = { 0.75, 0.45, 1.00, 1.00 } },
+    [146] = { name = 'Water',   short = 'WAT', buff = 305, color = { 0.20, 0.55, 0.95, 1.00 } },
+    [147] = { name = 'Light',   short = 'LGT', buff = 306, color = { 1.00, 0.90, 0.35, 1.00 } },
+    [148] = { name = 'Dark',    short = 'DRK', buff = 307, color = { 0.55, 0.40, 0.70, 1.00 } },
 };
 
 -- Okabe-Ito-inspired colors, extended with a muted violet for Dark. The
@@ -138,12 +143,12 @@ local presets = {
 };
 
 local default_profiles = {
-    ['1:20'] = 'balanced',
-    ['2:21'] = 'melee',
-    ['3:22'] = 'ranged',
-    ['4:23'] = 'nuker',
-    ['5:23'] = 'healer',
-    ['6:23'] = 'nuker',
+    ['1:32'] = 'balanced',
+    ['2:33'] = 'melee',
+    ['3:34'] = 'ranged',
+    ['4:35'] = 'nuker',
+    ['5:35'] = 'healer',
+    ['6:35'] = 'nuker',
 };
 
 local defaults = T{
@@ -152,10 +157,15 @@ local defaults = T{
     position_y = 260,
     refresh_at = 12,
     repair_warn_at = 40,
+    mp_sound_alert = false,
+    mp_sound_threshold = 10,
     burden_threshold = 0,
     burden_heatsink = false,
     burden_heatsink_mode = 'auto',
     burden_guard = -1,
+    burden_view = 'plan',
+    burden_side = 'right',
+    auto_water_mode = false,
     colorblind = false,
     systems_visible = false,
     systems_side = 'right',
@@ -173,12 +183,12 @@ local defaults = T{
         nuker = T{ 'Ice', 'Ice', 'Dark' },
     },
     profiles = T{
-        ['1:20'] = 'balanced',
-        ['2:21'] = 'melee',
-        ['3:22'] = 'ranged',
-        ['4:23'] = 'nuker',
-        ['5:23'] = 'healer',
-        ['6:23'] = 'nuker',
+        ['1:32'] = 'balanced',
+        ['2:33'] = 'melee',
+        ['3:34'] = 'ranged',
+        ['4:35'] = 'nuker',
+        ['5:35'] = 'healer',
+        ['6:35'] = 'nuker',
     },
 };
 
@@ -186,11 +196,13 @@ local state = T{
     settings = settings.load(defaults),
     open = { true },
     systems_open = { true },
+    burden_open = { true },
     slots = T{},
     last_action = -10,
     maneuver_request = nil,
     pending_maneuver = nil,
     overload_skip = nil,
+    auto_water_pending = false,
     last_sync = 0,
     first_draw = true,
     pet_hp_current = nil,
@@ -200,8 +212,13 @@ local state = T{
     pet_hp_updated = 0,
     pet_mp_current = nil,
     pet_mp_max = nil,
+    mp_alert_pet_server_id = 0,
+    mp_alert_initialized = false,
+    mp_alert_armed = false,
     automaton_head = 0,
     automaton_frame = 0,
+    automaton_melee_skill = nil,
+    automaton_ranged_skill = nil,
     active_mode = 'custom',
     pet_status_server_id = 0,
     pet_status_hpp = nil,
@@ -214,6 +231,7 @@ local state = T{
     hud_vitals_font = nil,
     systems_pet_initialized = false,
     systems_pet_server_id = 0,
+    burden_display_cache = nil,
 };
 
 local function copy_plan(plan)
@@ -230,9 +248,22 @@ local function ensure_settings_shape()
     state.settings.auto_combat = nil;
     state.settings.repair_warn_at = math.max(0, math.min(99,
         tonumber(state.settings.repair_warn_at) or 40));
+    state.settings.mp_sound_alert = state.settings.mp_sound_alert == true;
+    -- Migrate the short-lived 3.10.0 default without overwriting a custom
+    -- threshold that was already set to another value.
+    if (state.settings.mp_sound_threshold_v2 ~= true) then
+        local previous = tonumber(state.settings.mp_sound_threshold);
+        if (previous == nil or previous == 20) then
+            state.settings.mp_sound_threshold = 10;
+        end
+        state.settings.mp_sound_threshold_v2 = true;
+    end
+    state.settings.mp_sound_threshold = math.max(1, math.min(99,
+        math.floor(tonumber(state.settings.mp_sound_threshold) or 10)));
     state.settings.burden_threshold =
         tonumber(state.settings.burden_threshold) == 5 and 5 or 0;
     state.settings.burden_heatsink = state.settings.burden_heatsink == true;
+    state.settings.auto_water_mode = state.settings.auto_water_mode == true;
     local heatsink_mode = string.lower(tostring(
         state.settings.burden_heatsink_mode or 'auto'));
     if (heatsink_mode ~= 'auto' and heatsink_mode ~= 'on'
@@ -243,6 +274,15 @@ local function ensure_settings_shape()
     local burden_guard = tonumber(state.settings.burden_guard);
     state.settings.burden_guard = burden_guard ~= nil
         and math.max(-1, math.min(100, math.floor(burden_guard))) or -1;
+    local burden_view = string.lower(tostring(
+        state.settings.burden_view or 'plan'));
+    if (burden_view ~= 'plan' and burden_view ~= 'all'
+        and burden_view ~= 'off') then
+        burden_view = 'plan';
+    end
+    state.settings.burden_view = burden_view;
+    state.settings.burden_side = state.settings.burden_side == 'left'
+        and 'left' or 'right';
     state.settings.colorblind = state.settings.colorblind == true;
     state.settings.systems_visible = state.settings.systems_visible == true;
     state.settings.systems_side = state.settings.systems_side == 'left'
@@ -303,6 +343,7 @@ local burden_model = burden.attach({
 
 local function configure_burden_model()
     local heatsink = effective_heatsink();
+    state.burden_display_cache = nil;
     -- Keep the legacy boolean synchronized for settings readers from older
     -- releases; mode is the authoritative user choice in this release.
     state.settings.burden_heatsink = heatsink;
@@ -311,8 +352,8 @@ local function configure_burden_model()
         heatsink = heatsink,
         -- PupMan learns the equipped frame from packet 0x44. Valoredge and
         -- Sharpshot use LSB's reduced Dark burden path.
-        frame_half_dark = state.automaton_frame == 21
-            or state.automaton_frame == 22,
+        frame_half_dark = state.automaton_frame == 0x21
+            or state.automaton_frame == 0x22,
     });
 end
 
@@ -701,6 +742,64 @@ local function pet_vitals()
     };
 end
 
+local function reset_mp_sound_alert()
+    state.mp_alert_pet_server_id = 0;
+    state.mp_alert_initialized = false;
+    state.mp_alert_armed = false;
+end
+
+local function play_mp_alert_sound()
+    local ok, err = pcall(ashita.misc.play_sound, MP_SOUND_PATH);
+    if (not ok) then
+        error_message('Could not play the low-MP sound: ' .. tostring(err));
+        return false;
+    end
+    return true;
+end
+
+local function play_mp_sound_alert(mpp)
+    -- This is notification-only. It never queues an ability, spell, item, or
+    -- any other gameplay command.
+    state.mp_alert_armed = false;
+    play_mp_alert_sound();
+    message(('Automaton MP low: %d%%.'):fmt(mpp));
+end
+
+local function update_mp_sound_alert()
+    if (not state.settings.mp_sound_alert or not is_pup()) then
+        reset_mp_sound_alert();
+        return;
+    end
+
+    local pet = get_pet();
+    local vitals = pet_vitals();
+    if (pet == nil or vitals == nil or not vitals.has_mp) then
+        reset_mp_sound_alert();
+        return;
+    end
+
+    local server_id = pet.ServerId or 0;
+    local threshold = state.settings.mp_sound_threshold;
+    local recovery = math.min(100, threshold + MP_SOUND_RECOVERY_MARGIN);
+    local mpp = math.max(0, math.min(100, tonumber(vitals.mpp) or 0));
+
+    if (not state.mp_alert_initialized
+        or state.mp_alert_pet_server_id ~= server_id) then
+        -- A cold attach should not announce immediately. Arm only after this
+        -- automaton has been observed above the configured low-MP threshold.
+        state.mp_alert_pet_server_id = server_id;
+        state.mp_alert_initialized = true;
+        state.mp_alert_armed = mpp > threshold;
+        return;
+    end
+
+    if (mpp >= recovery) then
+        state.mp_alert_armed = true;
+    elseif (mpp <= threshold and state.mp_alert_armed) then
+        play_mp_sound_alert(math.floor(mpp + 0.5));
+    end
+end
+
 local function current_buff_counts()
     local counts = {};
     local overloaded = false;
@@ -761,6 +860,13 @@ local function count_slots()
         counts[slot.name] = (counts[slot.name] or 0) + 1;
     end
     return counts;
+end
+
+local function automaton_combat_skill()
+    if automatonws.combat_skill_kind(state.automaton_frame) == 'ranged' then
+        return state.automaton_ranged_skill;
+    end
+    return state.automaton_melee_skill;
 end
 
 local function total_count(counts)
@@ -929,6 +1035,59 @@ local function maneuver_risk(name, overloaded)
     return risk;
 end
 
+-- One cached display snapshot feeds both the plan circuit and the optional
+-- all-element sidecar. The currently planned element reuses decision.risk so
+-- its percentage exactly matches the actionable RISK readout.
+local function burden_risk_snapshot(decision)
+    local now = os.clock();
+    local overloaded = decision ~= nil and decision.overloaded == true;
+    local view = state.settings.burden_view;
+    local plan_key = table.concat(state.settings.plan, ',');
+    local key = ('%s|%s|%s|%s'):fmt(view, tostring(overloaded),
+        plan_key, decision ~= nil and decision.planned_name or '');
+    local cache = state.burden_display_cache;
+    if (cache ~= nil and cache.key == key and now - cache.at < 0.25) then
+        if (decision ~= nil and decision.planned_name ~= nil
+            and decision.risk ~= nil) then
+            cache.risks[decision.planned_name] = decision.risk;
+        end
+        return cache.risks;
+    end
+
+    local risks = {};
+    if (view == 'all') then
+        for ability_id = MANEUVER_MIN_ID, MANEUVER_MAX_ID do
+            local element = elements[ability_id];
+            risks[element.name] = maneuver_risk(element.name, overloaded);
+        end
+    else
+        for _, name in ipairs(state.settings.plan) do
+            if (risks[name] == nil) then
+                risks[name] = maneuver_risk(name, overloaded);
+            end
+        end
+    end
+    if (decision ~= nil and decision.planned_name ~= nil
+        and decision.risk ~= nil) then
+        risks[decision.planned_name] = decision.risk;
+    end
+    state.burden_display_cache = { key = key, at = now, risks = risks };
+    return risks;
+end
+
+local function burden_risk_text(risk)
+    if (risk == nil or risk.score == nil) then
+        return '?';
+    elseif (risk.label == forecast.RISK.OVERLOAD) then
+        return 'OL';
+    elseif (risk.quality == 'bound') then
+        return ('<=%d%%'):fmt(risk.score);
+    elseif (risk.quality == 'estimate') then
+        return ('~%d%%'):fmt(risk.score);
+    end
+    return ('%d%%'):fmt(risk.score);
+end
+
 local function missing_plan_maneuvers(active)
     local remaining = {};
     for name, count in pairs(active) do
@@ -1003,6 +1162,7 @@ local function decision_snapshot()
         overloaded = false,
         risk = maneuver_risk(nil, false),
         vitals = pet_vitals(),
+        ws_prediction = nil,
     };
     if (not has_pet()) then
         decision.reason = 'No automaton';
@@ -1013,6 +1173,13 @@ local function decision_snapshot()
     local active, observed_overload = current_buff_counts();
     decision.active_counts = active;
     decision.overloaded = observed_overload or burden_model:is_overloaded();
+    decision.ws_prediction = automatonws.predict({
+        frame = state.automaton_frame,
+        skill = automaton_combat_skill(),
+        maneuvers = active,
+        inhibitor = burden_stats:has_attachment('Inhibitor'),
+        tp = decision.vitals ~= nil and decision.vitals.tp or nil,
+    });
     local planning_counts = {};
     for name, count in pairs(active) do planning_counts[name] = count; end
     local planned, reason, status, due, missing = planned_maneuver(
@@ -1028,8 +1195,23 @@ local function decision_snapshot()
         return decision;
     end
 
+    local auto_water = state.auto_water_pending
+        and state.settings.auto_water_mode and heatsink_detected();
+    if (state.auto_water_pending and not auto_water) then
+        -- The recovery override is valid only while the option is enabled and
+        -- the attachment provider still confirms that Heatsink is equipped.
+        state.auto_water_pending = false;
+    elseif (auto_water) then
+        planned = 'Water';
+        due = true;
+        decision.planned_name = planned;
+        decision.reason = 'Heatsink overload recovery: use Water';
+        decision.status = 'AUTO WATER';
+        decision.risk = maneuver_risk(planned, false);
+    end
+
     local skip = state.overload_skip;
-    if (skip ~= nil) then
+    if (skip ~= nil and not auto_water) then
         local skip_risk = maneuver_risk(skip.name, false);
         if (overload_skip_ready(skip_risk)) then
             state.overload_skip = nil;
@@ -1294,7 +1476,10 @@ local function resolve_profile_mode()
     if (by_head[state.automaton_head] ~= nil) then
         return by_head[state.automaton_head];
     end
-    local by_frame = { [20] = 'balanced', [21] = 'melee', [22] = 'ranged', [23] = 'nuker' };
+    local by_frame = {
+        [0x20] = 'balanced', [0x21] = 'melee',
+        [0x22] = 'ranged', [0x23] = 'nuker',
+    };
     return by_frame[state.automaton_frame] or 'balanced';
 end
 
@@ -1381,16 +1566,17 @@ end
 local function print_burden_status()
     configure_burden_model();
     burden_model:tick();
-    local half_dark = state.automaton_frame == 21
-        or state.automaton_frame == 22;
+    local half_dark = state.automaton_frame == 0x21
+        or state.automaton_frame == 0x22;
     local heatsink = effective_heatsink();
     local heatsink_mode = state.settings.burden_heatsink_mode;
     local guard = state.settings.burden_guard >= 0
         and (tostring(state.settings.burden_guard) .. '%') or 'off';
-    message(('Burden model: threshold +%d | Heatsink %s (%s) | guard %s | Water %d | decay %d/tick | half-dark %s (auto).'):fmt(
+    message(('Burden model: threshold +%d | Heatsink %s (%s) | guard %s | view %s/%s | Water %d | decay %d/tick | half-dark %s (auto).'):fmt(
         state.settings.burden_threshold,
         heatsink and 'on' or 'off', heatsink_mode,
         guard,
+        state.settings.burden_view, state.settings.burden_side,
         burden_model.water_maneuvers or 0,
         burden_model:decay_per_tick(),
         half_dark and 'on' or 'off'));
@@ -1466,6 +1652,7 @@ local function print_help()
         '/pm hp - print the synchronized raw HP values',
         '/pm repair - use Repair once when ready and oil is available',
         '/pm repairwarn <0-99> - set the HUD HP warning threshold',
+        '/pm mpalert <on|off|status|test|threshold 1-99>',
         '/pm mode <profile|balanced|melee|ranged|tank|healer|nuker>',
         '/pm mode set <name> <element> <element> <element>',
         '/pm profile <mode> - bind the current head/frame profile',
@@ -1473,7 +1660,9 @@ local function print_help()
         '/pm systems <on|off|toggle|status|side left|right>',
         '/pm autohide | townhide | cshide [on|off]',
         '/pm colorblind [on|off] - toggle the alternate element palette',
+        '/pm autowatermode [on|off|toggle|status] - Water after Overload',
         '/pm burden [status|reset] - inspect or reset the burden model',
+        '/pm burden view <plan|all|off> | side <left|right>',
         '/pm burden threshold <0|5> | heatsink <auto|on|off>',
         '/pm burden guard <off|0-100> - optional /pm n safety hold',
         '/pm burden log <on|off|status> | note <text>',
@@ -1500,8 +1689,10 @@ settings.register('settings', 'settings_update', function(s)
     apply_selected_mode(false);
     state.maneuver_request = nil;
     state.pending_maneuver = nil;
+    state.auto_water_pending = false;
     petstatus.clear();
     invalidate_pet_hp();
+    reset_mp_sound_alert();
     state.first_draw = true;
     settings.save();
 end);
@@ -1510,8 +1701,10 @@ ashita.events.register('load', 'load_cb', function()
     load_hud_font();
     state.maneuver_request = nil;
     state.pending_maneuver = nil;
+    state.auto_water_pending = false;
     petstatus.clear();
     invalidate_pet_hp();
+    reset_mp_sound_alert();
     ensure_settings_shape();
     configure_burden_model();
     configure_systems_tracker();
@@ -1529,6 +1722,7 @@ ashita.events.register('unload', 'unload_cb', function()
     burden_stats:detach();
     state.maneuver_request = nil;
     state.pending_maneuver = nil;
+    state.auto_water_pending = false;
     petstatus.clear();
     settings.save();
 end);
@@ -1538,8 +1732,10 @@ ashita.events.register('packet_in', 'packet_in_cb', function(e)
         petstatus.clear();
         systems_tracker:on_pet_lost();
         state.overload_skip = nil;
+        state.auto_water_pending = false;
         state.systems_pet_initialized = false;
         state.systems_pet_server_id = 0;
+        reset_mp_sound_alert();
         return;
     end
 
@@ -1547,7 +1743,7 @@ ashita.events.register('packet_in', 'packet_in_cb', function(e)
     -- percentage exposed by the entity table.
     if (e.id == 0x0044) then
         local data = e.data_modified or e.data_raw;
-        if (data == nil or #data < 0x70) then
+        if (data == nil or #data < 0x78) then
             return;
         end
         local job = data:byte(0x04 + 1);
@@ -1571,6 +1767,8 @@ ashita.events.register('packet_in', 'packet_in_cb', function(e)
         local profile_changed = head ~= state.automaton_head or frame ~= state.automaton_frame;
         state.automaton_head = head;
         state.automaton_frame = frame;
+        state.automaton_melee_skill = struct.unpack('H', data, 0x70 + 1);
+        state.automaton_ranged_skill = struct.unpack('H', data, 0x74 + 1);
         configure_burden_model();
         configure_systems_tracker();
         state.pet_hp_current = current_hp;
@@ -1661,6 +1859,7 @@ ashita.events.register('packet_in', 'packet_in_cb', function(e)
         -- A fresh automaton has fresh elemental burden. Overload itself lives
         -- on the master and is still enforced separately by the live buff.
         state.overload_skip = nil;
+        state.auto_water_pending = false;
     end
 
     local pet = get_pet();
@@ -1693,6 +1892,11 @@ ashita.events.register('packet_in', 'packet_in_cb', function(e)
                 state.last_action = now;
 
                 if (action.Message == 798) then
+                    if (element.name == 'Water' and state.auto_water_pending) then
+                        -- Clear only after the server confirms that Water was
+                        -- processed; queueing /pm n alone proves nothing.
+                        state.auto_water_pending = false;
+                    end
                     local request = state.maneuver_request;
                     if (request ~= nil and request.name == element.name
                         and now - request.sent <= MANEUVER_REQUEST_TIMEOUT) then
@@ -1717,6 +1921,8 @@ ashita.events.register('packet_in', 'packet_in_cb', function(e)
                         name = element.name,
                         seen = now,
                     };
+                    state.auto_water_pending = state.settings.auto_water_mode
+                        and heatsink_detected();
                 end
                 state.maneuver_request = nil;
                 return;
@@ -1759,6 +1965,39 @@ ashita.events.register('command', 'command_cb', function(e)
     elseif (command == 'repairwarn' and tonumber(args[3]) ~= nil) then
         state.settings.repair_warn_at = math.max(0, math.min(99, math.floor(tonumber(args[3]))));
         message(('Repair warning: %d%% HP.'):fmt(state.settings.repair_warn_at));
+    elseif (command == 'mpalert') then
+        local option = string.lower(args[3] or 'status');
+        if (option == 'status') then
+            message(('Low-MP sound alert: %s at %d%% (re-arms at %d%%).'):fmt(
+                state.settings.mp_sound_alert and 'on' or 'off',
+                state.settings.mp_sound_threshold,
+                math.min(100, state.settings.mp_sound_threshold
+                    + MP_SOUND_RECOVERY_MARGIN)));
+        elseif (option == 'on' or option == 'off' or option == 'toggle') then
+            state.settings.mp_sound_alert = option == 'on'
+                or (option == 'toggle' and not state.settings.mp_sound_alert);
+            reset_mp_sound_alert();
+            message('Low-MP sound alert: '
+                .. (state.settings.mp_sound_alert and 'on.' or 'off.'));
+        elseif (option == 'test') then
+            play_mp_alert_sound();
+            message('Low-MP sound alert test.');
+        elseif (option == 'threshold' or tonumber(option) ~= nil) then
+            local value = tonumber(option == 'threshold' and args[4] or option);
+            if (value == nil or value < 1 or value > 99) then
+                error_message('Use /pm mpalert threshold <1-99>.');
+                return;
+            end
+            state.settings.mp_sound_threshold = math.floor(value);
+            reset_mp_sound_alert();
+            message(('Low-MP sound threshold: %d%% (re-arms at %d%%).'):fmt(
+                state.settings.mp_sound_threshold,
+                math.min(100, state.settings.mp_sound_threshold
+                    + MP_SOUND_RECOVERY_MARGIN)));
+        else
+            error_message('Use /pm mpalert on, off, status, test, or threshold <1-99>.');
+            return;
+        end
     elseif (command == 'mode') then
         local option = string.lower(args[3] or 'status');
         if (option == 'status') then
@@ -1784,14 +2023,63 @@ ashita.events.register('command', 'command_cb', function(e)
             return;
         end
         message('Colorblind element palette: ' .. (state.settings.colorblind and 'on.' or 'off.'));
+    elseif (command == 'autowatermode' or command == 'autowater') then
+        local option = string.lower(args[3] or 'status');
+        if (option == 'status') then
+            message(('Auto Water mode: %s | Heatsink %s | recovery %s.'):fmt(
+                state.settings.auto_water_mode and 'on' or 'off',
+                heatsink_detected() and 'equipped' or 'not detected',
+                state.auto_water_pending and 'pending' or 'idle'));
+        elseif (option == 'on' or option == 'off' or option == 'toggle') then
+            local value = option == 'on'
+                or (option == 'toggle' and not state.settings.auto_water_mode);
+            state.settings.auto_water_mode = value;
+            if (value) then
+                -- Enabling immediately after an Overload may recover the
+                -- still-tracked failure without requiring another Overload.
+                state.auto_water_pending = state.overload_skip ~= nil
+                    and heatsink_detected();
+            else
+                state.auto_water_pending = false;
+            end
+            message('Auto Water mode: ' .. (value and 'on.' or 'off.'));
+        else
+            error_message('Use /pm autowatermode on, off, toggle, or status.');
+            return;
+        end
     elseif (command == 'burden') then
         local option = string.lower(args[3] or 'status');
-        if (option == 'reset') then
+        if (option == 'view') then
+            local value = string.lower(args[4] or 'status');
+            if (value == 'status') then
+                message(('Burden HUD view: %s%s.'):fmt(
+                    state.settings.burden_view,
+                    state.settings.burden_view == 'all'
+                        and (', ' .. state.settings.burden_side .. ' side') or ''));
+            elseif (value == 'plan' or value == 'all' or value == 'off') then
+                state.settings.burden_view = value;
+                message(('Burden HUD view: %s%s.'):fmt(
+                    value, value == 'all'
+                        and (', ' .. state.settings.burden_side .. ' side') or ''));
+            else
+                error_message('Use /pm burden view plan, all, or off.');
+                return;
+            end
+        elseif (option == 'side') then
+            local side = string.lower(args[4] or '');
+            if (side ~= 'left' and side ~= 'right') then
+                error_message('Use /pm burden side left or right.');
+                return;
+            end
+            state.settings.burden_side = side;
+            message('Burden sidecar side: ' .. side .. '.');
+        elseif (option == 'reset') then
             if (has_pet()) then
                 burden_model:on_cold_attach();
             else
                 burden_model:on_deactivate();
             end
+            state.burden_display_cache = nil;
             state.overload_skip = nil;
             message('Burden projections reset; elements are unknown until anchored.');
         elseif (option == 'status') then
@@ -1862,7 +2150,7 @@ ashita.events.register('command', 'command_cb', function(e)
             burden_model:telemetry_note(note);
             message('Burden telemetry note recorded.');
         else
-            error_message('Use /pm burden status, reset, threshold, heatsink, guard, log, or note.');
+            error_message('Use /pm burden status, reset, view, side, threshold, heatsink, guard, log, or note.');
         end
     elseif (command == 'layout') then
         local layout = string.lower(args[3] or '');
@@ -1982,9 +2270,11 @@ ashita.events.register('command', 'command_cb', function(e)
         state.maneuver_request = nil;
         state.pending_maneuver = nil;
         state.overload_skip = nil;
+        state.auto_water_pending = false;
         petstatus.clear();
         state.systems_pet_initialized = false;
         state.systems_pet_server_id = 0;
+        reset_mp_sound_alert();
         state.first_draw = true;
         message('Settings and tracked timers reset.');
     elseif (command == 'help') then
@@ -2250,6 +2540,37 @@ local function render_pet_vitals(vitals)
     render_vital_bars(vitals or pet_vitals(), '##pupman_pet_vitals');
 end
 
+local function render_ws_projection(prediction)
+    if (prediction == nil) then
+        return;
+    end
+
+    if (imgui.BeginTable('##pupman_ws_projection', 2,
+        ImGuiTableFlags_SizingStretchSame)) then
+        imgui.TableNextColumn();
+        imgui.TextDisabled('NEXT WS');
+        imgui.SameLine();
+        local color = prediction.ready
+            and { 0.45, 0.90, 1.00, 1.00 } or toau_theme.text;
+        imgui.PushStyleColor(ImGuiCol_Text, color);
+        imgui.Text(string.upper(prediction.name));
+        imgui.PopStyleColor();
+
+        imgui.TableNextColumn();
+        if (prediction.conditional) then
+            imgui.PushStyleColor(ImGuiCol_Text, { 0.95, 0.63, 0.20, 1.00 });
+            imgui.Text('INHIBITOR: CONDITIONAL');
+            imgui.PopStyleColor();
+        elseif (prediction.maneuvers > 0) then
+            imgui.TextDisabled(('%s x%d'):fmt(
+                string.upper(prediction.element), prediction.maneuvers));
+        else
+            imgui.TextDisabled('DEFAULT PRIORITY');
+        end
+        imgui.EndTable();
+    end
+end
+
 local function render_pet_effects(micro)
     local pet = get_pet();
     local effects = petstatus.get_effects(pet ~= nil and pet.ServerId or 0);
@@ -2405,7 +2726,7 @@ end
 -- A compact three-node circuit for micro mode. The rail preserves plan order,
 -- filled nodes show currently active maneuver copies, and the pulsing outer
 -- ring marks the element PupMan would recommend next.
-local function render_micro_plan(next_name, active_counts)
+local function render_micro_plan(next_name, active_counts, burden_risks)
     imgui.TextDisabled('PLAN');
     imgui.SameLine();
 
@@ -2419,8 +2740,10 @@ local function render_micro_plan(next_name, active_counts)
 
     local draw = imgui.GetWindowDrawList();
     local rail_y = y + 11;
-    local rail_start = x + 18;
-    local rail_end = x + width - 18;
+    local rail_margin = state.settings.burden_view ~= 'off'
+        and burden_risks ~= nil and 38 or 18;
+    local rail_start = x + rail_margin;
+    local rail_end = x + width - rail_margin;
     local rail_span = rail_end - rail_start;
     local panel = imgui.GetColorU32({
         toau_theme.bg_medium[1], toau_theme.bg_medium[2],
@@ -2505,12 +2828,32 @@ local function render_micro_plan(next_name, active_counts)
 
             draw_element_icon(draw, element.name,
                 node_x[index], rail_y, 8, color);
-            local abbreviation = string.upper(string.sub(element.name, 1, 3));
-            local text_width = imgui.CalcTextSize(abbreviation);
-            draw:AddText(
-                { node_x[index] - text_width / 2, y + 21 },
-                imgui.GetColorU32({ color[1], color[2], color[3],
-                    is_active and 0.96 or 0.62 }), abbreviation);
+            local abbreviation = element.short;
+            local risk = burden_risks ~= nil and burden_risks[element.name]
+                or nil;
+            local show_risk = state.settings.burden_view ~= 'off'
+                and risk ~= nil;
+            if (show_risk) then
+                local risk_text = burden_risk_text(risk);
+                local name_width = imgui.CalcTextSize(abbreviation);
+                local risk_width = imgui.CalcTextSize(risk_text);
+                local gap = 4;
+                local text_x = node_x[index]
+                    - (name_width + gap + risk_width) / 2;
+                draw:AddText(
+                    { text_x, y + 21 },
+                    imgui.GetColorU32({ color[1], color[2], color[3],
+                        is_active and 0.96 or 0.72 }), abbreviation);
+                draw:AddText(
+                    { text_x + name_width + gap, y + 21 },
+                    imgui.GetColorU32(risk.color), risk_text);
+            else
+                local text_width = imgui.CalcTextSize(abbreviation);
+                draw:AddText(
+                    { node_x[index] - text_width / 2, y + 21 },
+                    imgui.GetColorU32({ color[1], color[2], color[3],
+                        is_active and 0.96 or 0.62 }), abbreviation);
+            end
         end
     end
 end
@@ -2547,7 +2890,9 @@ local function render_micro(decision)
     end
 
     render_vital_bars(vitals, '##pupman_micro_vitals');
-    render_micro_plan(decision.planned_name, decision.active_counts);
+    render_ws_projection(decision.ws_prediction);
+    render_micro_plan(decision.planned_name, decision.active_counts,
+        decision.burden_risks);
     render_pet_effects(true);
 
     if (imgui.BeginTable('##pupman_micro_decision', 2, ImGuiTableFlags_SizingStretchSame)) then
@@ -2743,12 +3088,136 @@ local function render_systems_panel(flags)
     imgui.End();
 end
 
+local function render_burden_name(element, active_counts, draw)
+    local color = element_display_color(element);
+    local active = math.max(0, math.min(3,
+        tonumber(active_counts[element.name]) or 0));
+    local icon_x, icon_y = imgui.GetCursorScreenPos();
+    local cursor_x = imgui.GetCursorPosX();
+    draw_element_icon(draw, element.name, icon_x + 7, icon_y + 7, 7,
+        color);
+    imgui.SetCursorPosX(cursor_x + 16);
+    imgui.PushStyleColor(ImGuiCol_Text, color);
+    imgui.Text(element.short);
+    imgui.PopStyleColor();
+    local text_width = imgui.CalcTextSize(element.short);
+    for index = 1, active do
+        draw:AddCircleFilled(
+            { icon_x + 16 + text_width + 4 + (index - 1) * 5,
+                icon_y + 7 },
+            1.7, imgui.GetColorU32(color), 8);
+    end
+end
+
+local function render_burden_value(risk, draw)
+    local meter_x, meter_y = imgui.GetCursorScreenPos();
+    local meter_width = math.min(40,
+        math.max(1, imgui.GetContentRegionAvail() - 2));
+    local fraction = risk ~= nil and risk.score ~= nil
+        and math.clamp(risk.score / 100, 0, 1) or 0;
+    local color = risk ~= nil and risk.color or toau_theme.brass_dim;
+    if (risk ~= nil and risk.score ~= nil) then
+        draw:AddRectFilled(
+            { meter_x, meter_y + 14 },
+            { meter_x + meter_width, meter_y + 16 },
+            imgui.GetColorU32(toau_theme.bg_lighter), 1.0);
+        if (fraction > 0) then
+            draw:AddRectFilled(
+                { meter_x, meter_y + 14 },
+                { meter_x + meter_width * fraction, meter_y + 16 },
+                imgui.GetColorU32(color), 1.0);
+        end
+    end
+    imgui.PushStyleColor(ImGuiCol_Text,
+        color);
+    imgui.Text(burden_risk_text(risk));
+    imgui.PopStyleColor();
+end
+
+local function render_burden_panel(flags, decision, main_height)
+    local side = state.settings.burden_side;
+    local systems_offset = state.settings.systems_visible
+        and state.settings.systems_side == side
+        and (SYSTEMS_WIDTH + SYSTEMS_GAP) or 0;
+    local panel_x = side == 'left'
+        and (state.settings.position_x - BURDEN_WIDTH - SYSTEMS_GAP
+            - systems_offset)
+        or (state.settings.position_x + HUD_WIDTH + SYSTEMS_GAP
+            + systems_offset);
+    imgui.SetNextWindowPos(
+        { panel_x, state.settings.position_y }, ImGuiCond_Always);
+    local panel_height = main_height ~= nil and main_height > 0
+        and main_height or nil;
+    imgui.SetNextWindowSizeConstraints(
+        { BURDEN_WIDTH, panel_height or -1 },
+        { BURDEN_WIDTH, panel_height or FLT_MAX });
+    imgui.SetNextWindowBgAlpha(0.96);
+    state.burden_open[1] = true;
+    if (imgui.Begin('Element Burden##pupman_burden',
+        state.burden_open, flags)) then
+        local panel_x_screen, panel_y_screen = imgui.GetWindowPos();
+        local panel_width, panel_height = imgui.GetWindowSize();
+        local draw = imgui.GetWindowDrawList();
+        local rail_color = decision ~= nil and decision.risk ~= nil
+            and decision.risk.color or toau_theme.brass;
+        draw:AddRectFilled(
+            { panel_x_screen + 1, panel_y_screen + 1 },
+            { panel_x_screen + panel_width - 1, panel_y_screen + 3 },
+            imgui.GetColorU32({
+                toau_theme.teal[1], toau_theme.teal[2],
+                toau_theme.teal[3], 0.70 }), 3.0);
+        draw:AddRectFilled(
+            { panel_x_screen + 1, panel_y_screen + 4 },
+            { panel_x_screen + 4, panel_y_screen + panel_height - 4 },
+            imgui.GetColorU32({
+                rail_color[1], rail_color[2], rail_color[3], 0.78 }), 2.0);
+
+        imgui.PushStyleColor(ImGuiCol_Text, toau_theme.brass);
+        imgui.Text('ELEMENT BURDEN');
+        imgui.PopStyleColor();
+        imgui.SameLine();
+        imgui.TextDisabled('IF USED NOW');
+        imgui.Separator();
+
+        local active_counts = decision.active_counts or {};
+        if (imgui.BeginTable('##pupman_burden_rows', 4,
+            ImGuiTableFlags_SizingStretchProp)) then
+            imgui.TableSetupColumn('##burden_name_left',
+                ImGuiTableColumnFlags_WidthStretch, 0, 0);
+            imgui.TableSetupColumn('##burden_value_left',
+                ImGuiTableColumnFlags_WidthFixed, 45, 1);
+            imgui.TableSetupColumn('##burden_name_right',
+                ImGuiTableColumnFlags_WidthStretch, 0, 2);
+            imgui.TableSetupColumn('##burden_value_right',
+                ImGuiTableColumnFlags_WidthFixed, 45, 3);
+            for row = 0, 3 do
+                local left = elements[MANEUVER_MIN_ID + row * 2];
+                local right = elements[MANEUVER_MIN_ID + row * 2 + 1];
+                imgui.TableNextColumn();
+                render_burden_name(left, active_counts, draw);
+                imgui.TableNextColumn();
+                render_burden_value(decision.burden_risks[left.name], draw);
+                imgui.TableNextColumn();
+                render_burden_name(right, active_counts, draw);
+                imgui.TableNextColumn();
+                render_burden_value(decision.burden_risks[right.name], draw);
+            end
+            imgui.EndTable();
+        end
+        imgui.Separator();
+        imgui.TextDisabled('DOTS ACTIVE COPIES');
+        imgui.TextDisabled('~ ESTIMATE  //  <= BOUND');
+    end
+    imgui.End();
+end
+
 ashita.events.register('d3d_present', 'present_cb', function()
     local pup_active = is_pup();
     if (pup_active) then
         synchronize_systems_pet();
         reconcile_slots();
     end
+    update_mp_sound_alert();
     if (not state.settings.visible or not pup_active or should_auto_hide_hud()) then
         return;
     end
@@ -2782,8 +3251,12 @@ ashita.events.register('d3d_present', 'present_cb', function()
     -- Keep both layouts the same width so switching modes does not shift the
     -- right edge or reflow labels differently.
     imgui.SetNextWindowSizeConstraints({ HUD_WIDTH, -1 }, { HUD_WIDTH, FLT_MAX });
+    local decision = nil;
+    local main_height = nil;
     if (imgui.Begin('PUPMan##pupman', state.open, flags)) then
-        local decision = decision_snapshot();
+        decision = decision_snapshot();
+        decision.burden_risks = state.settings.burden_view ~= 'off'
+            and burden_risk_snapshot(decision) or {};
         render_toau_motif(decision);
 
         if (micro) then
@@ -2792,6 +3265,7 @@ ashita.events.register('d3d_present', 'present_cb', function()
 
             render_compact_header();
             render_pet_vitals(decision.vitals);
+            render_ws_projection(decision.ws_prediction);
             render_pet_effects(false);
             render_section_header('MANEUVER CONTROL');
             render_plan();
@@ -2804,10 +3278,15 @@ ashita.events.register('d3d_present', 'present_cb', function()
             render_ability_recasts();
 
         end
+        local _, window_height = imgui.GetWindowSize();
+        main_height = window_height;
     end
     imgui.End();
     if (state.settings.systems_visible) then
         render_systems_panel(flags);
+    end
+    if (state.settings.burden_view == 'all' and decision ~= nil) then
+        render_burden_panel(flags, decision, main_height);
     end
     imgui.PopStyleVar(5);
     imgui.PopStyleColor(17);
