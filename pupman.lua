@@ -1,6 +1,6 @@
 addon.name      = 'pupman';
 addon.author    = 'Koruru';
-addon.version   = '3.14.0';
+addon.version   = '3.14.3';
 addon.desc      = 'A compact maneuver planner, automaton control, and overload helper for Puppetmaster.';
 
 require 'common';
@@ -26,6 +26,8 @@ local MANEUVER_RESOURCE_OFFSET = 512;
 local MANEUVER_RECAST_SECONDS = 10;
 local MANEUVER_ATTEMPT_GUARD_SECONDS = 0.75;
 local RANGED_EQUIPMENT_SLOT = 2;
+-- Animator-class items whose names do not contain "Animator".
+local ANIMATOR_ITEM_IDS = { [21455] = true }; -- Alternator
 local MANEUVER_BUFF_GRACE_SECONDS = 1.0;
 local MANEUVER_CONFIRM_TIMEOUT = 2.5;
 local MANEUVER_REQUEST_TIMEOUT = 5.0;
@@ -232,6 +234,8 @@ local state = T{
     systems_pet_initialized = false,
     systems_pet_server_id = 0,
     burden_display_cache = nil,
+    drag = nil,
+    position_dirty = false,
 };
 
 local function copy_plan(plan)
@@ -636,6 +640,10 @@ local function animator_equipped()
     local item = inventory:GetContainerItem(container, index);
     if (item == nil or item.Id == nil or item.Id == 0) then
         return false;
+    end
+
+    if (ANIMATOR_ITEM_IDS[item.Id] == true) then
+        return true;
     end
 
     local resource = AshitaCore:GetResourceManager():GetItemById(item.Id);
@@ -1604,6 +1612,36 @@ local function print_burden_status()
     end
 end
 
+local function burden_panel_command(action)
+    local panel_visible = state.settings.burden_view == 'all';
+    if (action == 'show' or action == 'on') then
+        panel_visible = true;
+    elseif (action == 'hide' or action == 'off') then
+        panel_visible = false;
+    elseif (action == 'toggle') then
+        panel_visible = not panel_visible;
+    elseif (action ~= 'status') then
+        error_message('Use /pm burden panel show, hide, toggle, or status.');
+        return false;
+    end
+
+    if (action ~= 'status') then
+        if (panel_visible) then
+            state.settings.burden_view = 'all';
+        elseif (state.settings.burden_view == 'all') then
+            -- Hiding the side panel keeps the compact plan-node chances.
+            state.settings.burden_view = 'plan';
+        end
+    end
+
+    local plan_visible = state.settings.burden_view ~= 'off';
+    message(('Element Burden panel: %s%s. Plan chances: %s.'):fmt(
+        panel_visible and 'shown' or 'hidden',
+        panel_visible and (' on the ' .. state.settings.burden_side) or '',
+        plan_visible and 'shown' or 'hidden'));
+    return true;
+end
+
 local function print_systems_status()
     configure_systems_tracker();
     message(('Puppet Systems panel: %s, %s side.'):fmt(
@@ -1663,6 +1701,8 @@ local function print_help()
         '/pm colorblind [on|off] - toggle the alternate element palette',
         '/pm autowatermode [on|off|toggle|status] - Water after Overload',
         '/pm burden [status|reset] - inspect or reset the burden model',
+        '/pm burden <show|hide|toggle> - control the side panel',
+        '/pm burden panel <show|hide|toggle|status>',
         '/pm burden view <plan|all|off> | side <left|right>',
         '/pm burden threshold <0|5> | heatsink <auto|on|off>',
         '/pm burden guard <off|0-100> - optional /pm n safety hold',
@@ -1671,12 +1711,62 @@ local function print_help()
         '/pm plan <element> <element> <element> - set the plan',
         '/pm p <preset> - balanced, melee, ranged, tank, healer, or nuker',
         '/pm keys - print example keyboard binds',
+        'Shift + left-drag the HUD to move it',
         '/pm pos <x> <y> | /pm nudge <direction> [pixels]',
         '/pm show | hide | reset | help',
     };
     message('Commands:');
     for _, line in ipairs(lines) do
         print(chat.header(addon.name):append(chat.color1(6, line)));
+    end
+end
+
+local function is_shift_held()
+    local io = nil;
+    if (imgui.GetIO ~= nil) then io = imgui.GetIO(); end
+    if (io == nil) then io = imgui.io; end
+    return io ~= nil and io.KeyShift == true;
+end
+
+local function vector_xy(x, y)
+    if (type(x) == 'table') then
+        return x.x or x[1] or 0, x.y or x[2] or 0;
+    end
+    return x or 0, y or 0;
+end
+
+local function update_main_drag(window_x, window_y, window_w, window_h)
+    if (imgui.GetMousePos == nil or imgui.IsMouseClicked == nil
+        or imgui.IsMouseDown == nil) then
+        return;
+    end
+    local mouse_x, mouse_y = vector_xy(imgui.GetMousePos());
+    local hovering = mouse_x >= window_x and mouse_x <= window_x + window_w
+        and mouse_y >= window_y and mouse_y <= window_y + window_h;
+
+    if (state.drag == nil and is_shift_held() and hovering
+        and imgui.IsMouseClicked(0)) then
+        state.drag = {
+            start_mouse_x = mouse_x,
+            start_mouse_y = mouse_y,
+            start_x = state.settings.position_x,
+            start_y = state.settings.position_y,
+        };
+    end
+
+    if (state.drag == nil) then return; end
+    if (imgui.IsMouseDown(0)) then
+        state.settings.position_x = math.floor(
+            state.drag.start_x + mouse_x - state.drag.start_mouse_x + 0.5);
+        state.settings.position_y = math.floor(
+            state.drag.start_y + mouse_y - state.drag.start_mouse_y + 0.5);
+        state.position_dirty = true;
+    else
+        state.drag = nil;
+        if (state.position_dirty) then
+            state.position_dirty = false;
+            settings.save();
+        end
     end
 end
 
@@ -1954,7 +2044,7 @@ ashita.events.register('command', 'command_cb', function(e)
         state.settings.visible = false;
         state.open[1] = false;
     elseif (command == 'lock' or command == 'unlock' or command == 'controls') then
-        message('The HUD is always click-through. Use /pm pos or /pm nudge to move it.');
+        message('The HUD is click-through normally. Hold Shift and left-drag it to move.');
     elseif (command == 'next' or command == 'go' or command == 'n') then
         use_next(true);
     elseif (command == 'da' or command == 'deactivate') then
@@ -2050,7 +2140,13 @@ ashita.events.register('command', 'command_cb', function(e)
         end
     elseif (command == 'burden') then
         local option = string.lower(args[3] or 'status');
-        if (option == 'view') then
+        if (option == 'show' or option == 'hide' or option == 'toggle') then
+            burden_panel_command(option);
+        elseif (option == 'panel') then
+            if (not burden_panel_command(string.lower(args[4] or 'toggle'))) then
+                return;
+            end
+        elseif (option == 'view') then
             local value = string.lower(args[4] or 'status');
             if (value == 'status') then
                 message(('Burden HUD view: %s%s.'):fmt(
@@ -2151,7 +2247,7 @@ ashita.events.register('command', 'command_cb', function(e)
             burden_model:telemetry_note(note);
             message('Burden telemetry note recorded.');
         else
-            error_message('Use /pm burden status, reset, view, side, threshold, heatsink, guard, log, or note.');
+            error_message('Use /pm burden show, hide, toggle, status, reset, panel, view, side, threshold, heatsink, guard, log, or note.');
         end
     elseif (command == 'layout') then
         local layout = string.lower(args[3] or '');
@@ -3223,19 +3319,22 @@ ashita.events.register('d3d_present', 'present_cb', function()
         return;
     end
     state.open[1] = true;
-    if (state.first_draw) then
-        imgui.SetNextWindowPos({ state.settings.position_x, state.settings.position_y }, ImGuiCond_Always);
-        state.first_draw = false;
-    end
+    imgui.SetNextWindowPos(
+        { state.settings.position_x, state.settings.position_y },
+        ImGuiCond_Always);
+    state.first_draw = false;
 
-    local flags = bit.bor(
+    local base_flags = bit.bor(
         ImGuiWindowFlags_AlwaysAutoResize,
         ImGuiWindowFlags_NoDecoration,
-        ImGuiWindowFlags_NoInputs,
         ImGuiWindowFlags_NoMove,
         ImGuiWindowFlags_NoSavedSettings,
         ImGuiWindowFlags_NoFocusOnAppearing
     );
+    local drag_enabled = is_shift_held() or state.drag ~= nil;
+    local main_flags = drag_enabled and base_flags
+        or bit.bor(base_flags, ImGuiWindowFlags_NoInputs);
+    local sidecar_flags = bit.bor(base_flags, ImGuiWindowFlags_NoInputs);
 
     local font_pushed = false;
     if (state.hud_font ~= nil) then
@@ -3254,7 +3353,7 @@ ashita.events.register('d3d_present', 'present_cb', function()
     imgui.SetNextWindowSizeConstraints({ HUD_WIDTH, -1 }, { HUD_WIDTH, FLT_MAX });
     local decision = nil;
     local main_height = nil;
-    if (imgui.Begin('PUPMan##pupman', state.open, flags)) then
+    if (imgui.Begin('PUPMan##pupman', state.open, main_flags)) then
         decision = decision_snapshot();
         decision.burden_risks = state.settings.burden_view ~= 'off'
             and burden_risk_snapshot(decision) or {};
@@ -3281,13 +3380,16 @@ ashita.events.register('d3d_present', 'present_cb', function()
         end
         local _, window_height = imgui.GetWindowSize();
         main_height = window_height;
+        local window_x, window_y = vector_xy(imgui.GetWindowPos());
+        local window_w, window_h = vector_xy(imgui.GetWindowSize());
+        update_main_drag(window_x, window_y, window_w, window_h);
     end
     imgui.End();
     if (state.settings.systems_visible) then
-        render_systems_panel(flags);
+        render_systems_panel(sidecar_flags);
     end
     if (state.settings.burden_view == 'all' and decision ~= nil) then
-        render_burden_panel(flags, decision, main_height);
+        render_burden_panel(sidecar_flags, decision, main_height);
     end
     imgui.PopStyleVar(5);
     imgui.PopStyleColor(17);

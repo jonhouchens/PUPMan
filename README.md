@@ -76,11 +76,16 @@ and the selection ordering follows LandSandBoat's
 as a public baseline for Horizon's private fork.
 
 The burden display defaults to `plan`, which adds the three micro-plan chances
-without changing the HUD width or height. `/pm burden view all` also enables a
+without changing the HUD width or height. `/pm burden show` enables a
 separately anchored `ELEMENT BURDEN` sidecar containing all eight next-use
 chances. Each percentage has a thin 0-100% risk meter, while one to three
 quiet pips show active copies of that element without duplicating maneuver
 timers or ordering from a dedicated tracker such as Arcane Automata.
+`/pm burden hide` hides only that side panel, and `/pm burden toggle` switches
+it between shown and hidden. The longer `/pm burden panel show|hide|toggle`
+forms are also accepted. The original `/pm burden view all|plan|off` commands
+remain available when you want to control the side panel and inline plan
+chances together.
 `/pm burden side left|right` moves it around the main HUD. If Puppet
 Systems is visible on the same side, the burden panel automatically sits
 outside it instead of overlapping it. `/pm burden view off` hides both the
@@ -92,7 +97,10 @@ right of the main HUD without changing its size. `/pm systems on` enables it;
 timed systems supplied by the equipped frame and attachments, such as
 Valoredge Shield Bash, Shock Absorber's Stoneskin, Strobe, and Flashbulb.
 
-The HUD is always click-through: it does not capture the mouse, and all actions and positioning are command-driven.
+The HUD is click-through during normal play. Hold Shift and left-drag anywhere
+on the main HUD to move it; the new position is saved when you release the
+mouse. The Puppet Systems and Element Burden sidecars follow the main HUD and
+remain click-through.
 
 Town and cutscene auto-hide are enabled by default. Auto-hide only suppresses rendering; packet tracking and direct commands continue normally. `/pm autohide off` disables both conditions; `/pm townhide` and `/pm cshide` control them independently.
 
@@ -100,7 +108,7 @@ PUPMan uses 14 px Tahoma Bold by default to match XIUI's typography and improve 
 
 The recast display uses Ashita's maneuver ability resource plus an independent 10-second Horizon fallback. The local fallback begins only after a maneuver action packet confirms that the server processed the action. Merely queueing `/pm n` does not start it, so a command rejected while resting, standing up, or otherwise unable to act remains eligible on the next input. A short 0.75-second input guard prevents accidental command floods without treating the maneuver as used.
 
-PUPMan verifies that an Animator is actually equipped in the ranged slot before it queues a maneuver. If the slot is empty or contains another item, the command reports the problem and takes no action.
+PUPMan verifies that an Animator-class item is actually equipped in the ranged slot before it queues a maneuver. Standard Animator names and Alternator are recognized; if the slot is empty or contains another item, the command reports the problem and takes no action.
 
 PUPMan tracks maneuver expiration internally for plan recommendations, refresh decisions, and burden display, but leaves visible maneuver timers to a dedicated visualization addon.
 
@@ -138,7 +146,8 @@ To load it automatically, add the same line to your Ashita startup script. The H
 | `/pm mode melee` | Select a role plan |
 | `/pm layout micro` | Switch to the minimal HUD |
 | `/pm systems on` | Show the anchored Puppet Systems panel |
-| `/pm burden view all` | Show plan risks and the elemental burden sidecar |
+| `/pm burden show` | Show the elemental burden side panel |
+| `/pm burden hide` | Hide the side panel but retain inline plan chances |
 
 Full element names also work, such as `/pm fire` and `/pm light`. `/pupman` can be used in place of `/pm`.
 
@@ -193,6 +202,9 @@ No key is bound automatically.
 /pm autowatermode status
 /pm burden
 /pm burden reset
+/pm burden show
+/pm burden hide
+/pm burden toggle
 /pm burden view plan
 /pm burden view all
 /pm burden view off
@@ -233,7 +245,9 @@ An optional burden guard can hold any recommendation above a chosen projected ov
 
 A successful maneuver action packet is treated as provisional. After a one-second buff-list grace period, PUPMan allows up to 2.5 seconds for live confirmation before discarding the provisional slot. Plan completeness always comes from the live buff list. A clipped or otherwise unconfirmed maneuver therefore becomes eligible again after the normal 10-second recast instead of leaving the plan falsely `STABLE` until an older timer expires.
 
-Move the HUD with `/pm pos <x> <y>` or `/pm nudge <left|right|up|down> [pixels]`.
+Move the HUD by holding Shift and left-dragging it. You can also place it
+precisely with `/pm pos <x> <y>` or
+`/pm nudge <left|right|up|down> [pixels]`.
 
 ## Plans and head/frame profiles
 
