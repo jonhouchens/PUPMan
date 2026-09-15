@@ -1,6 +1,6 @@
 addon.name      = 'pupman';
 addon.author    = 'Koruru';
-addon.version   = '3.15.0';
+addon.version   = '3.15.1';
 addon.desc      = 'A compact maneuver planner, automaton control, and overload helper for Puppetmaster.';
 
 require 'common';
@@ -828,8 +828,11 @@ local function native_view_text()
                 and (tostring(instance.remaining) .. 's') or '?');
     end
     if (#parts == 0) then parts[1] = 'none'; end
-    return ('Ashita maneuvers: %s | overload=%s'):fmt(
-        table.concat(parts, ', '), tostring(view.overloaded));
+    local normalized = view.trimmed_maneuver_count > 0
+        and (' | normalized=%d->%d'):fmt(
+            view.raw_maneuver_count, #view.maneuvers) or '';
+    return ('Ashita maneuvers: %s | overload=%s%s'):fmt(
+        table.concat(parts, ', '), tostring(view.overloaded), normalized);
 end
 
 -- A pet that already exists on the first observation is a cold attach: its

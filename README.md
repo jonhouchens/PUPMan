@@ -255,7 +255,9 @@ burden model, but never create or remove active maneuvers. Plan completeness,
 duplicate counts, refresh order, and expiration all come from the current
 indexed `GetBuffs()` / `GetStatusTimers()` view. Economizer, Flame Holder,
 Overload, and other maneuver-consuming attachments therefore require no
-attachment-specific correction in PUPMan.
+attachment-specific correction in PUPMan. If Ashita briefly exposes four buffs
+during a max-cap replacement, PUPMan immediately drops the earliest-expiring
+outgoing instance so plans never see an impossible fourth maneuver.
 
 Move the HUD with `/pm unlock`, then hold Shift and left-drag it. Lock the
 position afterward with `/pm lock`. You can also place it precisely with
