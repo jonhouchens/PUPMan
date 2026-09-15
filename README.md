@@ -23,7 +23,8 @@ It provides:
 - Repair readiness, inventory oil count, and a configurable HP warning;
 - post-maneuver overload risk (`SAFE`, `LOW`, `WARM`, or `DANGER`) for the next plan element;
 - fixed-region warnings that do not resize the HUD when state changes;
-- explicit `UNKNOWN` state until a server result anchors an element;
+- an estimated Activate-equivalent burden baseline after login or zoning,
+  refined by subsequent server results;
 - vector element glyphs and an optional colorblind-safe palette;
 - server-anchored overload percentages with modeled decay between attempts;
 - the shared maneuver recast timer;
@@ -97,10 +98,11 @@ right of the main HUD without changing its size. `/pm systems on` enables it;
 timed systems supplied by the equipped frame and attachments, such as
 Valoredge Shield Bash, Shock Absorber's Stoneskin, Strobe, and Flashbulb.
 
-The HUD is click-through during normal play. Hold Shift and left-drag anywhere
-on the main HUD to move it; the new position is saved when you release the
-mouse. The Puppet Systems and Element Burden sidecars follow the main HUD and
-remain click-through.
+HUD movement is locked by default. Run `/pm unlock`, then hold Shift and
+left-drag anywhere on the main HUD to move it; the new position is saved when
+you release the mouse. Run `/pm lock` afterward to prevent accidental movement.
+The lock state persists between sessions. The Puppet Systems and Element
+Burden sidecars follow the main HUD and remain click-through.
 
 Town and cutscene auto-hide are enabled by default. Auto-hide only suppresses rendering; packet tracking and direct commands continue normally. `/pm autohide off` disables both conditions; `/pm townhide` and `/pm cshide` control them independently.
 
@@ -110,13 +112,17 @@ The recast display uses Ashita's maneuver ability resource plus an independent 1
 
 PUPMan verifies that an Animator-class item is actually equipped in the ranged slot before it queues a maneuver. Standard Animator names and Alternator are recognized; if the slot is empty or contains another item, the command reports the problem and takes no action.
 
-PUPMan tracks maneuver expiration internally for plan recommendations, refresh decisions, and burden display, but leaves visible maneuver timers to a dedicated visualization addon.
+PUPMan reads maneuver membership and the paired per-instance status timers
+directly from Ashita whenever it evaluates the plan. It does not maintain or
+reconcile a separate maneuver lifecycle. If Ashita reports an active maneuver
+but its timer is unavailable, PUPMan shows `TIMER ?` instead of claiming the
+plan is stable.
 
 The presets are starting points only. The best elements depend on your head, frame, attachments, target, and party role.
 
 ## Install
 
-Copy `pupman.lua`, `actionpacket.lua`, and `petstatus.lua` into
+Copy `pupman.lua`, `maneuverview.lua`, `actionpacket.lua`, and `petstatus.lua` into
 `<Ashita>/addons/pupman/`. Then copy every Lua file from this repository's
 `libs/` directory into `<Ashita>/addons/libs/`.
 
@@ -135,6 +141,7 @@ To load it automatically, add the same line to your Ashita startup script. The H
 | Command | Action |
 | --- | --- |
 | `/pm n` | Use the recommended maneuver once |
+| `/pm native` | Print Ashita's maneuver indexes and remaining timers |
 | `/pm f` / `i` / `w` / `e` | Fire / Ice / Wind / Earth |
 | `/pm t` / `wa` / `l` / `d` | Thunder / Water / Light / Dark |
 | `/pm 1` / `2` / `3` | Use that slot from the current plan |
@@ -243,10 +250,16 @@ packet, render, or status event—the maneuver still requires one `/pm n` input.
 
 An optional burden guard can hold any recommendation above a chosen projected overload percentage: `/pm burden guard 20` allows risks through 20% and holds at 21% or higher. For modeled `estimate` quality, the guard compares against a conservative upper projection that allows for one uncertain decay tick. An enabled guard also holds on `UNKNOWN`; direct commands such as `/pm light`, `/pm use light`, and `/pm 1` remain manual overrides. The guard defaults to off.
 
-A successful maneuver action packet is treated as provisional. After a one-second buff-list grace period, PUPMan allows up to 2.5 seconds for live confirmation before discarding the provisional slot. Plan completeness always comes from the live buff list. A clipped or otherwise unconfirmed maneuver therefore becomes eligible again after the normal 10-second recast instead of leaving the plan falsely `STABLE` until an older timer expires.
+Maneuver action packets drive the confirmed 10-second recast fallback and the
+burden model, but never create or remove active maneuvers. Plan completeness,
+duplicate counts, refresh order, and expiration all come from the current
+indexed `GetBuffs()` / `GetStatusTimers()` view. Economizer, Flame Holder,
+Overload, and other maneuver-consuming attachments therefore require no
+attachment-specific correction in PUPMan.
 
-Move the HUD by holding Shift and left-dragging it. You can also place it
-precisely with `/pm pos <x> <y>` or
+Move the HUD with `/pm unlock`, then hold Shift and left-drag it. Lock the
+position afterward with `/pm lock`. You can also place it precisely with
+`/pm pos <x> <y>` or
 `/pm nudge <left|right|up|down> [pixels]`.
 
 ## Plans and head/frame profiles
@@ -267,6 +280,9 @@ For a mixed or preferred setup, equip it and use `/pm profile <mode>`. That stor
 ## Exact-HP Deactivate
 
 `/pm da` queues Deactivate only when the raw automaton `Current HP` integer is exactly equal to its raw `Max HP` integer and Deactivate is ready. It never uses the rounded entity HP percentage. It performs no follow-up action; Activate remains entirely player-controlled.
+
+Repeated `/pm da` presses during the same queued attempt are ignored silently, so
+spamming a bind produces only one chat confirmation and one queued Deactivate.
 
 The raw HP snapshot is invalidated whenever an action or direct action message targets the automaton, or a pet-status update indicates that its vitals may have changed. Percentages may invalidate a snapshot but can never approve Deactivate. Until a new PUP stat packet supplies exact HP, `/pm da` fails closed with no action.
 
@@ -327,7 +343,10 @@ PUPMan is designed around one-input/one-action commands. It does not maintain ma
 | healer | Light / Light / Dark |
 | nuker | Ice / Ice / Dark |
 
-When the addon is loaded in the middle of existing maneuvers, their initial timers are marked with `~` because FFXI exposes the active effects but not their original application times through the normal buff list. New maneuvers are timed exactly from their action packets.
+When the addon is loaded in the middle of existing maneuvers, Ashita's current
+status-timer array supplies their remaining lifetimes immediately. Use
+`/pm native` to print each maneuver's buff index and remaining time for
+diagnostics.
 
 ## Repair and burden notes
 
@@ -345,8 +364,11 @@ The estimate uses the model's local three-second tick phase and can be off by
 roughly one tick. Action results 798/799 anchor its gauge to the percentage reported by
 the server, then the telemetry-fitted Horizon model projects the value between
 observations. It uses a fresh burden of 30 at the assumed base threshold of 30,
-a normal-frame Dark gain of 15, and one decay per three-second server tick. A
-cold-attached element remains `UNKNOWN` until its first server result. For
+a normal-frame Dark gain of 15, and one decay per three-second server tick.
+On login, addon reload, or zoning with an automaton already present, every
+element begins at the same 30-point baseline but is marked `estimate` because
+no Activate packet was observed. Subsequent 798/799 results anchor the used
+element normally. For
 non-Dark Maneuvers, the fitted gain curve is 20 below stat parity, 19/18/17 at
 master-minus-pet differences 0/1/2, 15 at difference 3, and 14 at 4 or more.
 The difference-3 exception comes from repeated fresh-pet Light Maneuvers in the

@@ -1,6 +1,6 @@
 addon.name      = 'pupman';
 addon.author    = 'Koruru';
-addon.version   = '3.14.3';
+addon.version   = '3.15.0';
 addon.desc      = 'A compact maneuver planner, automaton control, and overload helper for Puppetmaster.';
 
 require 'common';
@@ -9,6 +9,7 @@ local actionpacket = require 'actionpacket';
 local automatonws  = require 'automatonws';
 local burden       = require 'burdenmodel';
 local forecast     = require 'burdenforecast';
+local maneuverview = require 'maneuverview';
 local pupcooldowns = require 'pupcooldowns';
 local pupstats     = require 'pupstats';
 local chat         = require 'chat';
@@ -18,8 +19,6 @@ local settings     = require 'settings';
 
 local PUP_JOB_ID = 18;
 local ACTIVATE_ABILITY_ID = 136;
-local OVERLOAD_BUFF_ID = 299;
-local MANEUVER_DURATION = 60;
 local MANEUVER_MIN_ID = 141;
 local MANEUVER_MAX_ID = 148;
 local MANEUVER_RESOURCE_OFFSET = 512;
@@ -28,9 +27,7 @@ local MANEUVER_ATTEMPT_GUARD_SECONDS = 0.75;
 local RANGED_EQUIPMENT_SLOT = 2;
 -- Animator-class items whose names do not contain "Animator".
 local ANIMATOR_ITEM_IDS = { [21455] = true }; -- Alternator
-local MANEUVER_BUFF_GRACE_SECONDS = 1.0;
-local MANEUVER_CONFIRM_TIMEOUT = 2.5;
-local MANEUVER_REQUEST_TIMEOUT = 5.0;
+local DEACTIVATE_REQUEST_TIMEOUT = 5.0;
 local HUD_FONT_PATH = 'C:\\Windows\\Fonts\\tahomabd.ttf';
 local HUD_FONT_SIZE = 14.0;
 local HUD_VITALS_FONT_SIZE = 16.0;
@@ -157,6 +154,7 @@ local defaults = T{
     visible = true,
     position_x = 420,
     position_y = 260,
+    position_locked = true,
     refresh_at = 12,
     repair_warn_at = 40,
     mp_sound_alert = false,
@@ -199,13 +197,11 @@ local state = T{
     open = { true },
     systems_open = { true },
     burden_open = { true },
-    slots = T{},
     last_action = -10,
     maneuver_request = nil,
-    pending_maneuver = nil,
+    deactivate_request = nil,
     overload_skip = nil,
     auto_water_pending = false,
-    last_sync = 0,
     first_draw = true,
     pet_hp_current = nil,
     pet_hp_max = nil,
@@ -244,6 +240,7 @@ end
 
 local function ensure_settings_shape()
     state.settings.layout = state.settings.layout == 'micro' and 'micro' or 'compact';
+    state.settings.position_locked = state.settings.position_locked ~= false;
     -- Migrate settings written by releases that called profile selection
     -- "auto".
     if (state.settings.mode == nil or state.settings.mode == 'auto') then
@@ -337,6 +334,7 @@ end
 
 local burden_model = burden.attach({
     alias = 'pupman_burden',
+    assume_fresh_on_cold_attach = true,
     thresh_gear = state.settings.burden_threshold,
     heatsink = effective_heatsink(),
     frame_half_dark = false,
@@ -809,23 +807,29 @@ local function update_mp_sound_alert()
     end
 end
 
-local function current_buff_counts()
-    local counts = {};
-    local overloaded = false;
-    local player = AshitaCore:GetMemoryManager():GetPlayer();
-    if (player == nil) then
-        return counts, overloaded;
-    end
+local function current_maneuver_view()
+    return maneuverview.read({ now = os.clock() });
+end
 
-    for _, buff_id in pairs(player:GetBuffs()) do
-        if (buff_id == OVERLOAD_BUFF_ID) then
-            overloaded = true;
-        elseif (by_buff[buff_id] ~= nil) then
-            local name = by_buff[buff_id].name;
-            counts[name] = (counts[name] or 0) + 1;
-        end
+local function current_buff_counts()
+    local view = current_maneuver_view();
+    return view.counts, view.overloaded;
+end
+
+local function native_view_text()
+    local view = current_maneuver_view();
+    if (view.error ~= nil) then return 'Native view error: ' .. view.error; end
+    local parts = {};
+    for _, instance in ipairs(view.maneuvers) do
+        parts[#parts + 1] = ('%s[i%d]=%s'):fmt(
+            instance.name,
+            instance.buff_index,
+            instance.remaining ~= nil
+                and (tostring(instance.remaining) .. 's') or '?');
     end
-    return counts, overloaded;
+    if (#parts == 0) then parts[1] = 'none'; end
+    return ('Ashita maneuvers: %s | overload=%s'):fmt(
+        table.concat(parts, ', '), tostring(view.overloaded));
 end
 
 -- A pet that already exists on the first observation is a cold attach: its
@@ -855,112 +859,11 @@ local function synchronize_systems_pet()
     end
 end
 
-local function remove_expired(now)
-    for index = #state.slots, 1, -1 do
-        if (state.slots[index].expires <= now) then
-            table.remove(state.slots, index);
-        end
-    end
-end
-
-local function count_slots()
-    local counts = {};
-    for _, slot in ipairs(state.slots) do
-        counts[slot.name] = (counts[slot.name] or 0) + 1;
-    end
-    return counts;
-end
-
 local function automaton_combat_skill()
     if automatonws.combat_skill_kind(state.automaton_frame) == 'ranged' then
         return state.automaton_ranged_skill;
     end
     return state.automaton_melee_skill;
-end
-
-local function total_count(counts)
-    local total = 0;
-    for _, count in pairs(counts) do
-        total = total + count;
-    end
-    return total;
-end
-
-local function record_maneuver(name, approximate, started)
-    local now = os.clock();
-    local activation_time = started or now;
-    remove_expired(now);
-    while (#state.slots >= 3) do
-        table.remove(state.slots, 1);
-    end
-    state.slots:append({
-        name = name,
-        started = activation_time,
-        expires = activation_time + MANEUVER_DURATION,
-        approximate = approximate == true,
-    });
-end
-
-local function reconcile_slots()
-    local now = os.clock();
-    if (now - state.last_sync < 0.25) then
-        return;
-    end
-    state.last_sync = now;
-    remove_expired(now);
-
-    if (state.maneuver_request ~= nil
-        and now - state.maneuver_request.sent >= MANEUVER_REQUEST_TIMEOUT) then
-        state.maneuver_request = nil;
-    end
-
-    -- Give the client a moment to apply a buff after its action packet arrives.
-    if (now - state.last_action < MANEUVER_BUFF_GRACE_SECONDS) then
-        return;
-    end
-
-    local actual = current_buff_counts();
-    local pending = state.pending_maneuver;
-    if (pending ~= nil) then
-        local actual_count = actual[pending.name] or 0;
-        local actual_total = total_count(actual);
-        local count_increased = actual_count > pending.before_count;
-        local full_replacement = pending.before_total >= 3 and actual_total >= 3;
-        if (count_increased or full_replacement) then
-            record_maneuver(pending.name, false, pending.seen);
-            state.pending_maneuver = nil;
-        elseif (now - pending.seen < MANEUVER_CONFIRM_TIMEOUT) then
-            return;
-        else
-            -- If the live buff count did not confirm the action, discard the
-            -- provisional packet result. Generic reconciliation below preserves
-            -- the real buffs and leaves the missing maneuver eligible after recast.
-            state.pending_maneuver = nil;
-        end
-    end
-    local tracked = count_slots();
-
-    for name, count in pairs(tracked) do
-        local excess = count - (actual[name] or 0);
-        while (excess > 0) do
-            for index, slot in ipairs(state.slots) do
-                if (slot.name == name) then
-                    table.remove(state.slots, index);
-                    break;
-                end
-            end
-            excess = excess - 1;
-        end
-    end
-
-    tracked = count_slots();
-    for name, count in pairs(actual) do
-        local missing = count - (tracked[name] or 0);
-        while (missing > 0) do
-            record_maneuver(name, true);
-            missing = missing - 1;
-        end
-    end
 end
 
 local function game_maneuver_recast()
@@ -1114,19 +1017,18 @@ local function missing_plan_maneuvers(active)
     return missing;
 end
 
-local function planned_maneuver(active, now)
-    -- The live buff list decides whether the plan is complete. Tracked slots
-    -- provide activation order and refresh timing, but never prove that a
-    -- maneuver landed.
+local function planned_maneuver(active, view)
+    -- Ashita's current buff list and indexed status timers are the complete
+    -- authority for both membership and refresh timing.
     local missing = missing_plan_maneuvers(active);
     if (#missing > 0) then
         local name = missing[1];
         return name, 'Fill missing ' .. name, 'MISSING', true, missing;
     end
 
-    local oldest = state.slots[1];
-    if (oldest ~= nil) then
-        local remaining = oldest.expires - now;
+    local oldest = view.oldest;
+    if (oldest ~= nil and oldest.remaining ~= nil) then
+        local remaining = oldest.remaining;
         if (remaining <= state.settings.refresh_at) then
             return oldest.name,
                 ('Refresh oldest (%.0fs left)'):fmt(math.max(0, remaining)),
@@ -1137,6 +1039,11 @@ local function planned_maneuver(active, now)
         return oldest.name,
             ('Plan stable - refresh in %.0fs'):fmt(until_refresh),
             ('STABLE %.0fs'):fmt(until_refresh), false, missing;
+    end
+
+    if (oldest ~= nil) then
+        return oldest.name, 'Plan complete - Ashita timer unavailable',
+            'TIMER ?', false, missing;
     end
 
     return state.settings.plan[1], 'Start plan', 'START', true, missing;
@@ -1179,7 +1086,9 @@ local function decision_snapshot()
         return decision;
     end
 
-    local active, observed_overload = current_buff_counts();
+    local maneuver_view = current_maneuver_view();
+    local active = maneuver_view.counts;
+    local observed_overload = maneuver_view.overloaded;
     decision.active_counts = active;
     decision.overloaded = observed_overload or burden_model:is_overloaded();
     decision.ws_prediction = automatonws.predict({
@@ -1192,7 +1101,7 @@ local function decision_snapshot()
     local planning_counts = {};
     for name, count in pairs(active) do planning_counts[name] = count; end
     local planned, reason, status, due, missing = planned_maneuver(
-        planning_counts, now);
+        planning_counts, maneuver_view);
     decision.planned_name = planned;
     decision.reason = reason;
     decision.status = status;
@@ -1331,12 +1240,9 @@ local function use_maneuver(name, user_initiated)
         and now - state.maneuver_request.sent < MANEUVER_ATTEMPT_GUARD_SECONDS) then
         return false;
     end
-    local actual = current_buff_counts();
     state.maneuver_request = {
         name = element.name,
         sent = now,
-        before_count = actual[element.name] or 0,
-        before_total = total_count(actual),
     };
     AshitaCore:GetChatManager():QueueCommand(-1, ('/ja "%s Maneuver" <me>'):fmt(element.name));
     return true;
@@ -1387,6 +1293,18 @@ local function use_deactivate(user_initiated)
         error_message('Deactivate requires Puppetmaster as your main job.');
         return;
     end
+
+    local now = os.clock();
+    if (state.deactivate_request ~= nil) then
+        if (now - state.deactivate_request < DEACTIVATE_REQUEST_TIMEOUT) then
+            -- A queued command can be pressed several times before the client
+            -- exposes its recast or removes the pet. Keep those duplicate
+            -- presses silent and do not enqueue the ability again.
+            return false;
+        end
+        state.deactivate_request = nil;
+    end
+
     local pet = get_pet();
     if (pet == nil) then
         error_message('You do not have an active automaton.');
@@ -1409,9 +1327,11 @@ local function use_deactivate(user_initiated)
         return;
     end
 
+    state.deactivate_request = now;
     AshitaCore:GetChatManager():QueueCommand(-1, '/ja "Deactivate" <me>');
     message(('Exact HP confirmed (%d/%d). Deactivate queued.'):fmt(
         current_hp, max_hp));
+    return true;
 end
 
 local function deactivate_readiness()
@@ -1685,6 +1605,7 @@ local function print_help()
     local lines = T{
         '/pm - show or hide the HUD',
         '/pm n - use the recommended maneuver once',
+        '/pm native - print Ashita buff indexes and timers',
         '/pm f|i|w|e|t|wa|l|d - use an element',
         '/pm 1|2|3 - use that slot from your plan',
         '/pm da - use Deactivate once at exact full HP',
@@ -1711,7 +1632,8 @@ local function print_help()
         '/pm plan <element> <element> <element> - set the plan',
         '/pm p <preset> - balanced, melee, ranged, tank, healer, or nuker',
         '/pm keys - print example keyboard binds',
-        'Shift + left-drag the HUD to move it',
+        '/pm unlock, then Shift + left-drag the HUD to move it',
+        '/pm lock - prevent accidental HUD movement',
         '/pm pos <x> <y> | /pm nudge <direction> [pixels]',
         '/pm show | hide | reset | help',
     };
@@ -1736,6 +1658,11 @@ local function vector_xy(x, y)
 end
 
 local function update_main_drag(window_x, window_y, window_w, window_h)
+    if (state.settings.position_locked) then
+        state.drag = nil;
+        state.position_dirty = false;
+        return;
+    end
     if (imgui.GetMousePos == nil or imgui.IsMouseClicked == nil
         or imgui.IsMouseDown == nil) then
         return;
@@ -1779,7 +1706,7 @@ settings.register('settings', 'settings_update', function(s)
     configure_systems_tracker();
     apply_selected_mode(false);
     state.maneuver_request = nil;
-    state.pending_maneuver = nil;
+    state.deactivate_request = nil;
     state.auto_water_pending = false;
     petstatus.clear();
     invalidate_pet_hp();
@@ -1791,7 +1718,7 @@ end);
 ashita.events.register('load', 'load_cb', function()
     load_hud_font();
     state.maneuver_request = nil;
-    state.pending_maneuver = nil;
+    state.deactivate_request = nil;
     state.auto_water_pending = false;
     petstatus.clear();
     invalidate_pet_hp();
@@ -1804,7 +1731,6 @@ ashita.events.register('load', 'load_cb', function()
     apply_selected_mode(false);
     settings.save();
     state.open[1] = state.settings.visible;
-    reconcile_slots();
     message('Loaded. Type /pm help for commands.');
 end);
 
@@ -1812,7 +1738,7 @@ ashita.events.register('unload', 'unload_cb', function()
     burden_model:detach();
     burden_stats:detach();
     state.maneuver_request = nil;
-    state.pending_maneuver = nil;
+    state.deactivate_request = nil;
     state.auto_water_pending = false;
     petstatus.clear();
     settings.save();
@@ -1822,6 +1748,7 @@ ashita.events.register('packet_in', 'packet_in_cb', function(e)
     if (e.id == 0x000A or e.id == 0x000B) then
         petstatus.clear();
         systems_tracker:on_pet_lost();
+        state.deactivate_request = nil;
         state.overload_skip = nil;
         state.auto_water_pending = false;
         state.systems_pet_initialized = false;
@@ -1988,26 +1915,7 @@ ashita.events.register('packet_in', 'packet_in_cb', function(e)
                         -- processed; queueing /pm n alone proves nothing.
                         state.auto_water_pending = false;
                     end
-                    local request = state.maneuver_request;
-                    if (request ~= nil and request.name == element.name
-                        and now - request.sent <= MANEUVER_REQUEST_TIMEOUT) then
-                        state.pending_maneuver = {
-                            name = element.name,
-                            seen = now,
-                            before_count = request.before_count,
-                            before_total = request.before_total,
-                        };
-                    else
-                        local tracked = count_slots();
-                        state.pending_maneuver = {
-                            name = element.name,
-                            seen = now,
-                            before_count = tracked[element.name] or 0,
-                            before_total = total_count(tracked),
-                        };
-                    end
                 else
-                    state.pending_maneuver = nil;
                     state.overload_skip = {
                         name = element.name,
                         seen = now,
@@ -2034,7 +1942,9 @@ ashita.events.register('command', 'command_cb', function(e)
     e.blocked = true;
 
     local command = string.lower(args[2] or 'toggle');
-    if (command == 'toggle') then
+    if (command == 'native') then
+        message(native_view_text());
+    elseif (command == 'toggle') then
         state.settings.visible = not state.settings.visible;
         state.open[1] = state.settings.visible;
     elseif (command == 'show') then
@@ -2043,8 +1953,17 @@ ashita.events.register('command', 'command_cb', function(e)
     elseif (command == 'hide') then
         state.settings.visible = false;
         state.open[1] = false;
-    elseif (command == 'lock' or command == 'unlock' or command == 'controls') then
-        message('The HUD is click-through normally. Hold Shift and left-drag it to move.');
+    elseif (command == 'lock') then
+        state.settings.position_locked = true;
+        state.drag = nil;
+        state.position_dirty = false;
+        message('HUD movement locked. Shift-drag is disabled.');
+    elseif (command == 'unlock') then
+        state.settings.position_locked = false;
+        message('HUD movement unlocked. Hold Shift and left-drag to move it.');
+    elseif (command == 'controls') then
+        message('HUD movement: '
+            .. (state.settings.position_locked and 'locked.' or 'unlocked.'));
     elseif (command == 'next' or command == 'go' or command == 'n') then
         use_next(true);
     elseif (command == 'da' or command == 'deactivate') then
@@ -2178,7 +2097,9 @@ ashita.events.register('command', 'command_cb', function(e)
             end
             state.burden_display_cache = nil;
             state.overload_skip = nil;
-            message('Burden projections reset; elements are unknown until anchored.');
+            message(has_pet()
+                and 'Burden projections reset to the estimated Activate baseline.'
+                or 'Burden projections reset; no automaton is active.');
         elseif (option == 'status') then
             print_burden_status();
         elseif (option == 'threshold') then
@@ -2363,9 +2284,8 @@ ashita.events.register('command', 'command_cb', function(e)
         ensure_settings_shape();
         configure_burden_model();
         configure_systems_tracker();
-        state.slots = T{};
         state.maneuver_request = nil;
-        state.pending_maneuver = nil;
+        state.deactivate_request = nil;
         state.overload_skip = nil;
         state.auto_water_pending = false;
         petstatus.clear();
@@ -2373,7 +2293,7 @@ ashita.events.register('command', 'command_cb', function(e)
         state.systems_pet_server_id = 0;
         reset_mp_sound_alert();
         state.first_draw = true;
-        message('Settings and tracked timers reset.');
+        message('Settings reset. Maneuvers are read directly from Ashita.');
     elseif (command == 'help') then
         print_help();
     else
@@ -3312,7 +3232,6 @@ ashita.events.register('d3d_present', 'present_cb', function()
     local pup_active = is_pup();
     if (pup_active) then
         synchronize_systems_pet();
-        reconcile_slots();
     end
     update_mp_sound_alert();
     if (not state.settings.visible or not pup_active or should_auto_hide_hud()) then
@@ -3331,7 +3250,8 @@ ashita.events.register('d3d_present', 'present_cb', function()
         ImGuiWindowFlags_NoSavedSettings,
         ImGuiWindowFlags_NoFocusOnAppearing
     );
-    local drag_enabled = is_shift_held() or state.drag ~= nil;
+    local drag_enabled = not state.settings.position_locked
+        and (is_shift_held() or state.drag ~= nil);
     local main_flags = drag_enabled and base_flags
         or bit.bor(base_flags, ImGuiWindowFlags_NoInputs);
     local sidecar_flags = bit.bor(base_flags, ImGuiWindowFlags_NoInputs);

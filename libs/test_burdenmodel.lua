@@ -40,6 +40,21 @@ equal(model:get(burden.ELEMENT.LIGHT), 29, 'one local decay tick')
 model:on_deactivate()
 equal(model:get(burden.ELEMENT.LIGHT), nil, 'Deactivate discards gauge')
 
+local assumed = burden.new({
+    now = function() return now end,
+    assume_fresh_on_cold_attach = true,
+})
+assumed:on_cold_attach()
+gauge, quality = assumed:get(burden.ELEMENT.LIGHT)
+equal(gauge, 30, 'cold attach assumes Activate gauge')
+equal(quality, burden.QUALITY.ESTIMATE,
+    'assumed cold attach remains visibly estimated')
+
+local conservative = burden.new({ now = function() return now end })
+conservative:on_cold_attach()
+equal(conservative:get(burden.ELEMENT.LIGHT), nil,
+    'cold attach default remains unknown for other consumers')
+
 now = 110
 model:on_activate()
 gauge, quality = model:get(burden.ELEMENT.LIGHT)
