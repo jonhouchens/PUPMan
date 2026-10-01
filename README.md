@@ -27,6 +27,8 @@ It provides:
   refined by subsequent server results;
 - vector element glyphs and an optional colorblind-safe palette;
 - server-anchored overload percentages with modeled decay between attempts;
+- Deus Ex Automata detection with an estimated 100 burden in every element,
+  refined by subsequent server maneuver results;
 - the shared maneuver recast timer;
 - short commands for one-input/one-action manual use;
 - an exact-HP, one-shot Deactivate command;
@@ -256,8 +258,11 @@ duplicate counts, refresh order, and expiration all come from the current
 indexed `GetBuffs()` / `GetStatusTimers()` view. Economizer, Flame Holder,
 Overload, and other maneuver-consuming attachments therefore require no
 attachment-specific correction in PUPMan. If Ashita briefly exposes four buffs
-during a max-cap replacement, PUPMan immediately drops the earliest-expiring
-outgoing instance so plans never see an impossible fourth maneuver.
+during a max-cap replacement, the native reader preserves that raw snapshot
+rather than guessing which still-active buff should be discarded; Ashita's next
+settled snapshot restores the normal three-maneuver view. A temporary timer-read
+failure never removes buff membership; those instances are simply approximate
+until native timers recover.
 
 Move the HUD with `/pm unlock`, then hold Shift and left-drag it. Lock the
 position afterward with `/pm lock`. You can also place it precisely with
@@ -290,10 +295,29 @@ The raw HP snapshot is invalidated whenever an action or direct action message t
 
 ## Puppet Systems cooldown panel
 
+Magic-capable frames now show `Magic Delay` plus the categories supported by
+their head: Healing, Elemental, Enfeebling, Enhancing, and Status Removal.
+Each observed cast **start** resets Magic Delay and the matching category;
+completion and interruption notifications do not restart them. Category rows
+show their own timer: casting requires both that category and Magic Delay to
+be ready. Target conditions, MP, and the automaton's decision cycle still apply.
+
+Magic values use the estimates configured in
+[PetsReborn](https://github.com/Zaldas/PetsReborn/blob/main/data/automatonCooldowns.lua)
+as inspected on 2026-09-16, with an independent PUPMan implementation.
+They are not verified Horizon server recasts and do not model attachment or
+gear changes to magic delay. Stormwaker uses 12.8s between casts, 20s Healing,
+25s Elemental, 10s Enfeebling, and 25s Enhancing. Soulsoother uses 6.4s between
+casts, 10s Healing/Enfeebling/Status Removal, and 15s Enhancing. Spiritreaver
+uses 12.8s between casts, 35s Elemental/Enhancing, and 5s Enfeebling.
+Freshly summoned automatons start with magic timers ready. Loading with a pet
+already active leaves each timer `UNKNOWN` until its corresponding cast is
+observed. Pet loss clears the timers. The `~` prefix also applies to magic.
+
 The side panel reads the twelve equipped attachment slots from the PUP `0x44`
 packet and watches incoming `0x28` actions performed by your automaton. An
 observed use anchors that system's countdown. A leading `~` means the remaining
-time uses the LandSandBoat duration as a model because Horizon's private-fork
+time uses an estimated duration (LandSandBoat for abilities) because Horizon's private-fork
 value cannot be read directly from the client.
 
 The panel uses four practical states:
@@ -387,9 +411,15 @@ value because every reading answers the same question—what happens if that
 element is used now—not a sequential simulation of the remaining plan.
 
 `/pm burden` or `/pm burden status` prints the configuration and all eight
-elemental projections, followed by the seven live non-Dark master-minus-pet
-stat comparisons. The printed chances are also next-maneuver projections, not
-idle-gauge chances. `/pm burden reset` returns the active pet's gauges to
+elemental projections, followed by the seven non-Dark master-minus-pet stat
+comparisons. After an element has been used once, its comparison and future
+projection reuse the master stat captured in that element's actual maneuver
+gear; before that first observation, they fall back to the live equipped stat.
+The cached maneuver stat is cleared on zoning or addon reload and refreshed on
+every later use of that element. Each comparison is marked `gear` when it uses
+the learned maneuver set or `live` while it is still using the fallback. The
+printed chances are next-maneuver
+projections, not idle-gauge chances. `/pm burden reset` returns the active pet's gauges to
 unknown. The Valoredge/Sharpshot reduced Dark-burden rule is selected
 automatically from PUPMan's synchronized frame data. Use `/pm burden threshold
 5` only when wearing Puppetry Dastanas and testing Horizon's unverified +5

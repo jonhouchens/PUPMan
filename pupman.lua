@@ -1,6 +1,6 @@
 addon.name      = 'pupman';
 addon.author    = 'Koruru';
-addon.version   = '3.15.1';
+addon.version   = '3.16.1';
 addon.desc      = 'A compact maneuver planner, automaton control, and overload helper for Puppetmaster.';
 
 require 'common';
@@ -828,11 +828,8 @@ local function native_view_text()
                 and (tostring(instance.remaining) .. 's') or '?');
     end
     if (#parts == 0) then parts[1] = 'none'; end
-    local normalized = view.trimmed_maneuver_count > 0
-        and (' | normalized=%d->%d'):fmt(
-            view.raw_maneuver_count, #view.maneuvers) or '';
-    return ('Ashita maneuvers: %s | overload=%s%s'):fmt(
-        table.concat(parts, ', '), tostring(view.overloaded), normalized);
+    return ('Ashita maneuvers: %s | overload=%s'):fmt(
+        table.concat(parts, ', '), tostring(view.overloaded));
 end
 
 -- A pet that already exists on the first observation is a cold attach: its
@@ -1530,8 +1527,8 @@ local function print_burden_status()
     if (#parts > 0) then
         message('Next-maneuver chances: ' .. table.concat(parts, ' | '));
     end
-    for _, group in ipairs(burden_stats:summary_groups(4)) do
-        message('Burden stats (master-pet): ' .. group);
+    for _, group in ipairs(burden_stats:summary_groups(4, 'estimate')) do
+        message('Burden stats (maneuver gear master-pet): ' .. group);
     end
 end
 
@@ -1597,7 +1594,7 @@ local function print_systems_status()
         elseif (row.known and row.eligible) then
             value = 'READY';
         end
-        message(('System %s: %s%s | LSB %.0fs'):fmt(
+        message(('System %s: %s%s | modeled %.1fs'):fmt(
             row.name, value,
             row.element ~= nil and (' | ' .. row.element) or '',
             row.cooldown));
@@ -1887,7 +1884,7 @@ ashita.events.register('packet_in', 'packet_in_cb', function(e)
     if (pet ~= nil) then
         petstatus.handle_action(packet, pet.ServerId);
         if (packet.UserId == pet.ServerId) then
-            systems_tracker:on_action(packet.Id);
+            systems_tracker:on_packet(packet);
         end
         for _, target in ipairs(packet.Targets) do
             if (target.Id == pet.ServerId) then
@@ -3057,7 +3054,7 @@ local function render_systems_panel(flags)
         imgui.Text('PUPPET SYSTEMS');
         imgui.PopStyleColor();
         imgui.SameLine();
-        imgui.TextDisabled('LSB PRIOR');
+        imgui.TextDisabled('ESTIMATES');
         imgui.Separator();
 
         local pet = get_pet();

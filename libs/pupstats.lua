@@ -1,12 +1,13 @@
 --[[
-pupstats.lua (v1.1) -- shared Puppetmaster burden-stat provider for Ashita v4
+pupstats.lua (v1.2) -- shared Puppetmaster burden-stat provider for Ashita v4
 
 The server's incoming 0x44 PUP packet contains the automaton's base and
 additional STR/DEX/VIT/AGI/INT/MND/CHR at offsets 0x80..0x9A.  Ashita exposes
 the corresponding master base and modifier values through IPlayer.  This
 module joins those two authoritative client-visible sources and snapshots the
 relevant pair when an outgoing Maneuver request is sent, before an aftercast
-gear swap can change the master's live values.
+gear swap can change the master's live values. Later UI estimates reuse each
+element's last maneuver-gear master stat with the current automaton stat.
 
 Usage:
     local pupstats = require('pupstats')
@@ -21,7 +22,7 @@ its own fixed rule and therefore has no associated stat.
 ]]
 
 local lib = {}
-lib.VERSION = '1.1'
+lib.VERSION = '1.2'
 
 local PUP_JOB_ID = 18
 local ACTION_PACKET = 0x01A
@@ -100,6 +101,7 @@ function lib.new(cfg)
     self.attachment_ids = {}
     self.attachment_names = {}
     self.pending = {}
+    self.maneuver_context = {}
     self.last_context = {}
     return self
 end
@@ -114,6 +116,7 @@ function Provider:clear()
     self.attachment_ids = {}
     self.attachment_names = {}
     self.pending = {}
+    self.maneuver_context = {}
     self.last_context = {}
 end
 
@@ -261,6 +264,7 @@ end
 function Provider:snapshot_maneuver(element_index)
     local context = self:_capture(element_index, 'outgoing_snapshot')
     self.pending[element_index] = context
+    self.maneuver_context[element_index] = context
     self.last_context[element_index] = context
     return context
 end
@@ -295,6 +299,40 @@ function Provider:_complete_snapshot(context)
     return context
 end
 
+-- Forecasts happen while the player is normally back in idle gear. Reuse the
+-- master stat captured after the maneuver set was equipped, but pair it with
+-- the current pet stat so attachment and automaton changes remain current.
+function Provider:_maneuver_projection(element_index)
+    local saved = self.maneuver_context[element_index]
+    local stat_index = lib.ELEMENT_STAT[element_index]
+    if saved == nil or stat_index == nil or saved.master_stat == nil then
+        return nil
+    end
+
+    local now = self.now()
+    local pet_base = self.pet_base[stat_index]
+    local pet_additional = self.pet_additional[stat_index]
+    local pet_total = self.pet_total[stat_index]
+    return {
+        element = element_index,
+        stat_index = stat_index,
+        stat_name = lib.STAT_NAME[stat_index],
+        master_stat_base = saved.master_stat_base,
+        master_stat_modifier = saved.master_stat_modifier,
+        master_stat = saved.master_stat,
+        pet_stat_base = pet_base,
+        pet_stat_additional = pet_additional,
+        pet_stat = pet_total,
+        stat_diff = pet_total ~= nil and (saved.master_stat - pet_total) or nil,
+        stat_source = 'maneuver_snapshot',
+        captured_at = now,
+        maneuver_stat_age = saved.captured_at ~= nil
+            and math.max(0, now - saved.captured_at) or nil,
+        pet_stat_age = self.pet_updated ~= nil
+            and math.max(0, now - self.pet_updated) or nil,
+    }
+end
+
 -- phase='maneuver' consumes a recent outgoing snapshot. Other callers receive
 -- a live view, suitable for UI projections between actions.
 function Provider:stat_diff(element_index, phase)
@@ -307,6 +345,8 @@ function Provider:stat_diff(element_index, phase)
         elseif context ~= nil then
             context = self:_complete_snapshot(context)
         end
+    elseif phase == 'estimate' then
+        context = self:_maneuver_projection(element_index)
     end
     if context == nil then
         context = self:_capture(element_index,
@@ -316,24 +356,32 @@ function Provider:stat_diff(element_index, phase)
     return context.stat_diff, context
 end
 
-function Provider:get_context(element_index)
+function Provider:get_context(element_index, phase)
+    if phase == 'estimate' then
+        return self:_maneuver_projection(element_index)
+            or self:_capture(element_index, 'live')
+    end
     return self:_capture(element_index, 'live')
 end
 
 -- Compact, addon-neutral diagnostic groups for chat status commands.
-function Provider:summary_groups(group_size)
+function Provider:summary_groups(group_size, phase)
     group_size = math.max(math.floor(tonumber(group_size) or 4), 1)
     local groups = {}
     local parts = {}
     for element_index = 0, 6 do
-        local context = self:get_context(element_index)
+        local context = self:get_context(element_index, phase)
+        local source = phase == 'estimate'
+            and (context.stat_source == 'maneuver_snapshot'
+                and ' gear' or ' live') or ''
         if context.master_stat ~= nil and context.pet_stat ~= nil then
-            parts[#parts + 1] = ('%s %s %d-%d=%+d'):format(
+            parts[#parts + 1] = ('%s %s %d-%d=%+d%s'):format(
                 lib.ELEMENT_NAME[element_index], context.stat_name,
-                context.master_stat, context.pet_stat, context.stat_diff)
+                context.master_stat, context.pet_stat, context.stat_diff,
+                source)
         else
-            parts[#parts + 1] = ('%s %s unavailable'):format(
-                lib.ELEMENT_NAME[element_index], context.stat_name)
+            parts[#parts + 1] = ('%s %s unavailable%s'):format(
+                lib.ELEMENT_NAME[element_index], context.stat_name, source)
         end
         if #parts == group_size then
             groups[#groups + 1] = table.concat(parts, ' | ')

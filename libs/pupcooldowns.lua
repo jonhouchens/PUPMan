@@ -1,11 +1,11 @@
 --[[
-pupcooldowns.lua (v1.1) -- shared Puppetmaster automaton-system tracker
+pupcooldowns.lua (v1.2) -- shared Puppetmaster automaton-system tracker
 
 Tracks discrete automaton abilities from incoming action packets. Equipped
 attachments and the active head/frame decide which rows exist and their modeled
 durations; the caller supplies those values from the PUP 0x44 packet.
 
-The default action IDs, cooldowns, and spawn behavior follow LandSandBoat's
+The ability action IDs, cooldowns, and spawn behavior follow LandSandBoat's
 base branch as of 2026-08-15. Horizon is a private fork, so every duration is a
 model value. An observed pet action is authoritative for when a cooldown began.
 
@@ -16,7 +16,8 @@ ability is observed rather than claiming a false READY state.
 ]]
 
 local lib = {}
-lib.VERSION = '1.1'
+local magic = require('pupmagic')
+lib.VERSION = '1.2'
 
 local HARLEQUIN_HEAD = 0x01
 local SHARPSHOT_HEAD = 0x03
@@ -129,6 +130,10 @@ function lib.new(cfg)
 end
 
 function Tracker:configure(attachments, frame, head)
+    if self.frame ~= (tonumber(frame) or 0)
+        or self.head ~= (tonumber(head) or 0) then
+        self.used_at = {}
+    end
     self.frame = tonumber(frame) or 0
     self.head = tonumber(head) or 0
     self.attachments = {}
@@ -139,7 +144,7 @@ function Tracker:configure(attachments, frame, head)
         end
     end
 
-    self.active_definitions = {}
+    self.active_definitions = magic.definitions(self.frame, self.head)
     for _, definition in ipairs(lib.DEFINITIONS) do
         local active = definition.frame ~= nil and definition.frame == self.frame
         if not active then
@@ -182,6 +187,32 @@ function Tracker:on_action(action_id)
     if definition == nil then return false end
     self.pet_active = true
     self.used_at[definition.key] = self.now()
+    return true
+end
+
+-- The caller has already checked that this packet belongs to our automaton.
+-- Cast starts (type 8) put the spell ID in the first result's Param. The
+-- header holds a cast/interrupt code; its low 16 bits distinguish interrupts.
+function Tracker:on_packet(packet)
+    if packet.Type == 11 then return self:on_action(packet.Id) end
+    if packet.Type ~= 8 or type(packet.Id) ~= 'number'
+        or packet.Id % 65536 == 0x7073 then return false end
+    local target = (packet.Targets or {})[1]
+    local action = target and (target.Actions or {})[1]
+    local spell_id = action and tonumber(action.Param)
+    if not spell_id or spell_id <= 0 or spell_id ~= math.floor(spell_id) then
+        return false
+    end
+    local enabled = false
+    for _, definition in ipairs(self.active_definitions) do
+        if definition.magic then enabled = true; break end
+    end
+    if not enabled then return false end
+    local now = self.now()
+    self.pet_active = true
+    self.used_at.magic_magic = now
+    local category = magic.category(spell_id)
+    if category then self.used_at[category] = now end
     return true
 end
 
