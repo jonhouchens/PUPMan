@@ -7,3 +7,6 @@ desktop.ini
 
 # Local Ashita runtime state.
 config/
+
+# Generated release packages.
+dist/

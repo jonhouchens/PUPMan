@@ -1,6 +1,6 @@
 addon.name      = 'pupman';
 addon.author    = 'Koruru';
-addon.version   = '3.16.1';
+addon.version   = '3.16.2';
 addon.desc      = 'A compact maneuver planner, automaton control, and overload helper for Puppetmaster.';
 
 require 'common';

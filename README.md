@@ -3,7 +3,7 @@
 PUPMan is a small Ashita v4 addon for managing Puppetmaster maneuvers.
 
 Its Puppetmaster models use the shared `automatonws.lua`, `burdenmodel.lua`,
-`burdenforecast.lua`, `pupstats.lua`, and `pupcooldowns.lua`
+`burdenforecast.lua`, `pupstats.lua`, `pupcooldowns.lua`, and `pupmagic.lua`
 libraries from Ashita's `addons/libs` directory. Both PUPMan and Arcane
 Automata consume these same implementations rather than maintaining separate
 stat or burden parsers.
@@ -124,9 +124,30 @@ The presets are starting points only. The best elements depend on your head, fra
 
 ## Install
 
-Copy `pupman.lua`, `maneuverview.lua`, `actionpacket.lua`, and `petstatus.lua` into
-`<Ashita>/addons/pupman/`. Then copy every Lua file from this repository's
-`libs/` directory into `<Ashita>/addons/libs/`.
+Download `PUPMan-vX.Y.Z.zip` from the matching GitHub release and extract its
+contents directly into `<Ashita>/addons/`. The archive already contains the
+required `pupman/` and `libs/` directories, so the resulting layout is:
+
+```text
+<Ashita>/addons/
+|-- pupman/
+|   |-- pupman.lua
+|   |-- maneuverview.lua
+|   |-- actionpacket.lua
+|   `-- petstatus.lua
+`-- libs/
+    |-- automatonws.lua
+    |-- burdenforecast.lua
+    |-- burdenmodel.lua
+    |-- pupcooldowns.lua
+    |-- pupmagic.lua
+    `-- pupstats.lua
+```
+
+For a manual source install, copy `pupman.lua`, `maneuverview.lua`,
+`actionpacket.lua`, and `petstatus.lua` into `<Ashita>/addons/pupman/`. Copy
+the six non-test Lua files listed above from this repository's `libs/`
+directory into `<Ashita>/addons/libs/`. Do not copy the `test_*.lua` files.
 
 ## Load
 
